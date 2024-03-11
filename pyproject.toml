@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dtai_tree_compress"
+version = "0.1"
+authors = [
+  { name="Laurens Devos" },
+]
+description = "TreeCompress: top-down compression of decision tree ensembles using L1 regularization"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy >= 1.26",
+    "scikit-learn >= 1.4",
+    "scipy >= 1.12",
+    "dtai-veritas >= 0.2",
+    "colorama",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Homepage = "https://github.com/laudv/tree-compress"
+Issues = "https://github.com/laudv/tree-compresss/issues"
