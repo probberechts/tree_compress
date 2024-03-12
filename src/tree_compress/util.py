@@ -4,8 +4,10 @@ from veritas import AddTreeType
 from sklearn.metrics import root_mean_squared_error
 from sklearn.metrics import accuracy_score
 
+
 def neg_root_mean_squared_error(ytrue, ypred):
     return -root_mean_squared_error(ytrue, ypred)
+
 
 def count_nnz_leafs(at):
     nnz = 0
@@ -14,6 +16,7 @@ def count_nnz_leafs(at):
             lvals = t.get_leaf_values(lid)
             nnz += int(np.any(np.abs(lvals) > 1e-5))
     return nnz
+
 
 def metric(at, ytrue, x=None, ypred=None):
     at_type = at.get_type()
@@ -34,6 +37,7 @@ def metric(at, ytrue, x=None, ypred=None):
 
     return score(ytrue, ypred)
 
+
 def metric_name(at):
     at_type = at.get_type()
     if at_type in {AddTreeType.REGR, AddTreeType.REGR_MEAN}:
@@ -43,19 +47,24 @@ def metric_name(at):
     else:
         raise RuntimeError("cannot determine task")
 
-def isworse(metric, reference, relerr=0.0): # higher is better
+
+def isworse(metric, reference, relerr=0.0):  # higher is better
     eps = (metric - reference) / reference
     return eps <= -relerr
+
 
 def is_almost_eq(metric, reference, relerr=1e-5):
     eps = abs((metric - reference) / reference)
     return eps < relerr
 
+
 def is_not_almost_eq(metric, reference, relerr=1e-5):
     return not is_almost_eq(metric, reference, relerr)
 
+
 def print_metrics(prefix, r, rcmp=None, cmp=isworse):
     import colorama
+
     RST = colorama.Style.RESET_ALL
     RED = colorama.Fore.RED
     GRN = colorama.Fore.GREEN
@@ -68,17 +77,21 @@ def print_metrics(prefix, r, rcmp=None, cmp=isworse):
     else:
         ctr, cte, cva = "", "", ""
 
-    print(f"METRICS {prefix:6s}",
-          f"{ctr}tr {r.mtrain:.3f}{RST},",
-          f"{cva}va {r.mvalid:.3f}{RST}",
-          f"{BLD}{cte}[te {r.mtest:.3f}]{RST},",
-          f" ntrees {r.ntrees:4d},",
-          f" nnodes {r.nnodes:4d},",
-          f" nleafs {r.nleafs:4d},",
-          f" nnz {r.nnz_leafs:4d},")
+    print(
+        f"METRICS {prefix:6s}",
+        f"{ctr}tr {r.mtrain:.3f}{RST},",
+        f"{cva}va {r.mvalid:.3f}{RST}",
+        f"{BLD}{cte}[te {r.mtest:.3f}]{RST},",
+        f" ntrees {r.ntrees:3d},",
+        f" nnodes {r.nnodes:5d},",
+        f" nleafs {r.nleafs:5d},",
+        f" nnz {r.nnz_leafs:5d}",
+    )
+
 
 def print_fit(r, alpha_search):
     import colorama
+
     RST = colorama.Style.RESET_ALL
 
     mtrain = alpha_search.compress.mtrain
@@ -95,21 +108,24 @@ def print_fit(r, alpha_search):
 
     print(f"{mtrain:7.3f} {mvalid:7.3f} ->", end=" ")
 
-    ndigits = int(np.ceil(np.log10(1+r.num_params)))
+    ndigits = int(np.ceil(np.log10(1 + r.num_params)))
 
-    print(f"{ctr}{r.mtrain_clf:7.3f}{RST} {cte}{r.mvalid_clf:7.3f}{RST},",
-          f"{r.frac_removed*100:3.0f}% removed",
-          f"(alpha={r.alpha:9.4f},",
-          #f"nnz={r['num_kept']}/{r['num_params']})",
-          "nnz={0:{n}d}/{1:{n}d})".format(r.num_kept, r.num_params, n=ndigits),
-          status,
-          np.power(10.0, [alpha_search.lo, alpha_search.hi]).round(4))
+    print(
+        f"{ctr}{r.mtrain_clf:7.3f}{RST} {cte}{r.mvalid_clf:7.3f}{RST},",
+        f"{r.frac_removed*100:3.0f}% removed",
+        f"(alpha={r.alpha:9.4f},",
+        # f"nnz={r['num_kept']}/{r['num_params']})",
+        "nnz={0:{n}d}/{1:{n}d})".format(r.num_kept, r.num_params, n=ndigits),
+        status,
+        np.power(10.0, [alpha_search.lo, alpha_search.hi]).round(4),
+    )
 
 
 def _color(metric, reference, relerr):
     from colorama import Fore
+
     if not isworse(metric, reference, relerr):
         return Fore.GREEN
-    if not isworse(metric, reference, relerr*2):
+    if not isworse(metric, reference, relerr * 2):
         return Fore.RED
     return Fore.YELLOW

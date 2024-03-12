@@ -1,4 +1,1 @@
-from .compress import \
-    Data, \
-    Compress, \
-    CompressRecord
+from .compress import Data, Compress, CompressRecord
