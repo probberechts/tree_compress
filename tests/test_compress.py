@@ -1,8 +1,8 @@
 import os
 import numpy as np
 import unittest
-import veritas
 import tree_compress
+import veritas
 
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
