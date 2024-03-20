@@ -48,8 +48,8 @@ def metric_name(at):
         raise RuntimeError("cannot determine task")
 
 
-def isworse(metric, reference, relerr=0.0):  # higher is better
-    eps = (metric - reference) / reference
+def isworse_relerr(metric, reference, relerr=0.0):  # higher is better
+    eps = (metric - reference) / abs(reference)
     return eps <= -relerr
 
 
@@ -62,7 +62,7 @@ def is_not_almost_eq(metric, reference, relerr=1e-5):
     return not is_almost_eq(metric, reference, relerr)
 
 
-def print_metrics(prefix, r, rcmp=None, cmp=isworse):
+def print_metrics(prefix, r, rcmp=None, cmp=isworse_relerr):
     import colorama
 
     RST = colorama.Style.RESET_ALL
@@ -97,8 +97,8 @@ def print_fit(r, alpha_search):
     mtrain = alpha_search.compress.mtrain
     mvalid = alpha_search.compress.mvalid
 
-    ctr = _color(r.mtrain_clf, mtrain, alpha_search.relerr)
-    cte = _color(r.mvalid_clf, mvalid, alpha_search.relerr)
+    ctr = _color(r.mtrain_clf, mtrain, alpha_search)
+    cte = _color(r.mvalid_clf, mvalid, alpha_search)
 
     status = f"{colorama.Fore.GREEN}fit ok{RST}"
     if alpha_search.underfits(r.mtrain_clf, r.mvalid_clf):
@@ -121,11 +121,9 @@ def print_fit(r, alpha_search):
     )
 
 
-def _color(metric, reference, relerr):
+def _color(metric, reference, alpha_search):
     from colorama import Fore
 
-    if not isworse(metric, reference, relerr):
+    if not alpha_search.isworse_fun(metric, reference):
         return Fore.GREEN
-    if not isworse(metric, reference, relerr * 2):
-        return Fore.RED
-    return Fore.YELLOW
+    return Fore.RED

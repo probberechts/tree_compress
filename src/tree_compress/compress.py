@@ -4,7 +4,7 @@ import veritas
 import itertools
 
 from dataclasses import dataclass
-from .util import count_nnz_leafs, metric, print_metrics, print_fit, isworse
+from .util import count_nnz_leafs, metric, print_metrics, print_fit, isworse_relerr
 from scipy.sparse import csr_matrix, csc_matrix
 from functools import partial
 from sklearn.linear_model import LogisticRegression, Lasso
@@ -123,9 +123,20 @@ class AlphaRecord:
 
 
 class AlphaSearch:
-    def __init__(self, compress, relerr):
+    def __init__(self, compress, isworse_fun):
+        """Search for a regularizion strength parameter.
+
+        Attributes
+        ----------
+        compress : Compress
+            The `Compress` object using this `AlphaSearch`
+
+        isworse_fun : function(metric, reference) -> {True, False}
+            When is the `metric` value worse than the `reference` value?
+
+        """
         self.compress = compress
-        self.relerr = relerr
+        self.isworse_fun = isworse_fun
 
         self.round = 0
         self.step = 1
@@ -158,21 +169,21 @@ class AlphaSearch:
         return record
 
     def isworse_tr(self, mtrain):
-        return isworse(mtrain, self.compress.mtrain, relerr=self.relerr)
+        return self.isworse_fun(mtrain, self.compress.mtrain)
 
     def isworse_va(self, mvalid):
-        return isworse(mvalid, self.compress.mvalid, relerr=self.relerr)
+        return self.isworse_fun(mvalid, self.compress.mvalid)
 
     def isnotworse_tr(self, mtrain):
-        return not isworse(mtrain, self.compress.mtrain, relerr=self.relerr)
+        return not self.isworse_fun(mtrain, self.compress.mtrain)
 
     def isnotworse_va(self, mvalid):
-        return not isworse(mvalid, self.compress.mvalid, relerr=self.relerr)
+        return not self.isworse_fun(mvalid, self.compress.mvalid)
 
     def overfits(self, mtrain, mvalid):
         cond1 = self.isnotworse_tr(mtrain)
         cond2 = self.isworse_va(mvalid)
-        cond3 = isworse(mvalid, mtrain, self.relerr)
+        cond3 = self.isworse_fun(mvalid, mtrain)
         return cond1 and cond2 and cond3
 
     def underfits(self, mtrain, mvalid):
@@ -191,7 +202,7 @@ class AlphaSearch:
         filt = filter(
             lambda r: self.isnotworse_va(r.mvalid_clf)
             and r.frac_removed < 1.0
-            and not isworse(r.mtrain_clf, r.mvalid_clf),  # overfitting
+            and not self.isworse_fun(r.mtrain_clf, r.mvalid_clf),  # overfitting
             records,
         )
         return filt
@@ -206,7 +217,7 @@ class AlphaSearch:
 
         prev_round_records = self.records[-1 * nsteps :]
 
-        # Out of the records whose validation metric is good enough wrt self.relerr...
+        # Out of the records whose validation metric is good enough...
         filt = self.quality_filter(prev_round_records)
         # ... pick the one with the highest alpha
         best = max(filt, default=None, key=lambda r: r.alpha)
@@ -231,7 +242,7 @@ class AlphaSearch:
             return best.lo, best.hi
 
     def get_best_record(self):
-        # Out of the good enough solutions (wrt self.relerr) ...
+        # Out of the good enough solutions...
         filt = self.quality_filter(self.records)
         return max(filt, default=None, key=lambda r: r.frac_removed)
 
@@ -239,8 +250,10 @@ class AlphaSearch:
 class Compress:
     def __init__(self, data, at, silent=False, seed=569):
         self.d = data
+        self.nlv = at.num_leaf_values()
         self.at = at
         self.silent = silent
+        self.no_convergence_warning = silent
         self.seed = seed
 
         self.mtrain = metric(self.at, ytrue=self.d.ytrain, x=self.d.xtrain)
@@ -307,6 +320,15 @@ class Compress:
         return index, num_cols
 
     def _transform_data(self, x, index, num_cols):
+        if self.at.num_leaf_values() == 1:
+            return self._transform_data_perleafvalue(x, index, num_cols, 0)
+        else:
+            raise RuntimeError("not implemented")
+            blocks = [self._transform_data_perleafvalue(x, index, num_cols, k)
+                      for k in range(self.at.num_leaf_values())]
+
+
+    def _transform_data_perleafvalue(self, x, index, num_cols, leaf_index):
         row_ind, col_ind = [], []
         values = []
         num_rows = x.shape[0]
@@ -323,14 +345,14 @@ class Compress:
                     col_ind += [col_idx]
                     if t.is_root(n_at_level):
                         # a coefficient * leaf values for root nodes, no bias
-                        values += [t.get_leaf_value(leaf_id, 0)]
+                        values += [t.get_leaf_value(leaf_id, leaf_index)]
                     else:
                         values += [1.0]  # only bias term for leaves
                 else:
                     row_ind += [i, i]
                     col_idx = index1[n_at_level]
                     col_ind += [col_idx, col_idx + 1]
-                    values += [1.0, t.get_leaf_value(leaf_id, 0)]
+                    values += [1.0, t.get_leaf_value(leaf_id, leaf_index)]
 
         if self.is_regression():  # Lasso
             xx = csc_matrix(
@@ -347,13 +369,24 @@ class Compress:
             xx = xx.toarray()
         return xx
 
-    def compress(self, relerr, max_rounds=4):
+    def compress(self,
+                 *,
+                 relerr=None,
+                 isworse_fun=None,
+                 max_rounds=2):
+
+        if relerr is not None:
+            assert isworse_fun is None
+            isworse_fun = partial(isworse_relerr, relerr=relerr)
+        else:
+            assert isworse_fun is not None
+
         last_record = self.records[-1]
         for i in range(max_rounds):
             if not self.silent:
                 print(f"\n\nROUND {i+1}")
 
-            self.compress_round(relerr)
+            self._compress_round(isworse_fun)
 
             new_record = self.records[-1]
             has_improved = last_record.nnodes <= new_record.nnodes
@@ -363,18 +396,16 @@ class Compress:
                 break
         return last_record.at
 
-    def compress_round(self, relerr):
-        isworse_cmp = partial(isworse, relerr=relerr)
-
+    def _compress_round(self, isworse_fun):
         for level in itertools.count():
-            r = self.compress_level(level, relerr)
+            r = self.compress_level(level, isworse_fun)
 
             if not self.silent:
                 r0 = self.records[0]
                 r1 = self.records[-1]
                 print_metrics("orig", r0)
-                print_metrics("prev", r1, rcmp=r0, cmp=isworse_cmp)
-                print_metrics("now", r, rcmp=r0, cmp=isworse_cmp)
+                print_metrics("prev", r1, rcmp=r0, cmp=isworse_fun)
+                print_metrics("now", r, rcmp=r0, cmp=isworse_fun)
                 print()
 
             self.records.append(r)
@@ -389,7 +420,7 @@ class Compress:
 
         return self.records[-1].at
 
-    def compress_level(self, level, relerr):
+    def compress_level(self, level, isworse_fun):
         tindex = time.time()
         index, num_cols = self._get_index(level, True)
         tindex = time.time() - tindex
@@ -403,10 +434,9 @@ class Compress:
             print(
                 f"Level {level} xxtrain.shape {xxtrain.shape}",
                 "dense" if isinstance(xxtrain, np.ndarray) else "sparse",
-                f"transform time: {tindex:.2f}s, {ttransform:.2f}s",
-                f"relerr {relerr}",
+                f"transform time: {tindex:.2f}s, {ttransform:.2f}s"
             )
-        alpha_search = AlphaSearch(self, relerr)
+        alpha_search = AlphaSearch(self, isworse_fun)
         clf = self._get_regularized_lin_clf(xxtrain)
 
         if num_cols == 0:
@@ -451,8 +481,16 @@ class Compress:
         return record
 
     def fit_coefficients(self, clf, xxtrain, xxvalid, alpha_record):
+        import warnings
+        from sklearn.exceptions import ConvergenceWarning
+
         fit_time = time.time()
-        clf.fit(xxtrain, self.d.ytrain)
+        if self.no_convergence_warning:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                clf.fit(xxtrain, self.d.ytrain)
+        else:
+            clf.fit(xxtrain, self.d.ytrain)
         fit_time = time.time() - fit_time
 
         num_params = xxtrain.shape[1]

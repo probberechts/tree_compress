@@ -8,7 +8,7 @@ def compress_topdown(data, clf, relerr=0.01, max_rounds=2, return_compress_objec
         at = veritas.get_addtree(clf)
 
     compress = Compress(data, at, silent=silent)
-    at_pruned = compress.compress(relerr, max_rounds)
+    at_pruned = compress.compress(relerr=relerr, max_rounds=max_rounds)
 
     if return_compress_object:
         return compress
