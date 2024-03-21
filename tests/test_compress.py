@@ -164,7 +164,7 @@ class TestCompress(unittest.TestCase):
         xvalid, xtest, yvalid, ytest = train_test_split(xtest, ytest, test_size=0.5)
 
         clf = clazz(
-            n_estimators=10,
+            n_estimators=20,
             max_depth=4,
             **kwargs
         )
@@ -174,18 +174,22 @@ class TestCompress(unittest.TestCase):
 
 
         at = veritas.get_addtree(clf)
-        #print(at[1])
-        #print(at.make_singleclass(0))
         veritas.test_conversion(at, X[:10,:], clf.predict_proba(X[:10,:]))
         yhat2 = np.argmax(at.predict(X), axis=1)
 
         data = tree_compress.Data(xtrain, ytrain, xtest, ytest, xvalid, yvalid)
         compressor = tree_compress.Compress(data, at, silent=False)
         relerr = 0.02
-        #at_pruned = compressor.compress(relerr=relerr, max_rounds=1)
-        #yhat3 = at_pruned.predict(X)
-        #before = compressor.records[0]
-        #after = compressor.records[-1]
+        at_pruned = compressor.compress(relerr=relerr, max_rounds=1)
+        yhat3 = np.argmax(at_pruned.predict(X), axis=1)
+        before = compressor.records[0]
+        after = compressor.records[-1]
+
+        self.assertGreaterEqual(before.ntrees, after.ntrees)
+        self.assertGreater(before.nnodes, after.nnodes)
+        self.assertGreater(before.nleafs, after.nleafs)
+        self.assertGreater(before.nnz_leafs, after.nnz_leafs)
+        self.assertGreaterEqual((1+relerr)*after.mvalid, before.mvalid)
 
         try:
             import matplotlib.pyplot as plt
@@ -197,8 +201,8 @@ class TestCompress(unittest.TestCase):
             ax[0, 1].set_title("clf pred")
             ax[1, 0].imshow(yhat2.reshape((100, 100)))
             ax[1, 0].set_title("at")
-            #ax[1, 1].imshow(yhat3.reshape((100, 100)))
-            ax[1, 1].imshow(at.predict(X)[:,2].reshape((100, 100)))
+            ax[1, 1].imshow(yhat3.reshape((100, 100)))
+            #ax[1, 1].imshow(at.predict(X)[:,2].reshape((100, 100)))
             ax[1, 1].set_title("pruned")
             plt.tight_layout()
             plt.show()
