@@ -51,7 +51,6 @@ class Data:
 @dataclass(init=False)
 class CompressRecord:
     level: int
-    alpha: float
     tindex: float
     ttransform: float
     tsearch: float
@@ -66,12 +65,13 @@ class CompressRecord:
     mtrain: float
     mtest: float
     mvalid: float
-    clf_mtrain: float
-    clf_mvalid: float
 
-    def __init__(self, level, alpha, at):
+    alphas: list
+    clf_mtrain: list
+    clf_mvalid: list
+
+    def __init__(self, level, at):
         self.level = level
-        self.alpha = alpha
         self.tindex = 0.0
         self.ttransform = 0.0
         self.tsearch = 0.0
@@ -87,8 +87,9 @@ class CompressRecord:
         self.mtest = 0.0
         self.mvalid = 0.0
 
-        self.clf_mtrain = 0.0
-        self.clf_mvalid = 0.0
+        self.alphas = []
+        self.clf_mtrain = []
+        self.clf_mvalid = []
 
 
 @dataclass(init=False)
@@ -97,8 +98,8 @@ class AlphaRecord:
     hi: float
     alpha: float
 
-    mtrain_clf: float
-    mvalid_clf: float
+    clf_mtrain: float
+    clf_mvalid: float
     num_params: int
     num_removed: int
     num_kept: int
@@ -112,8 +113,8 @@ class AlphaRecord:
         self.lo = lo
         self.hi = hi
         self.alpha = alpha
-        self.mtrain_clf = 0.0
-        self.mvalid_clf = 0.0
+        self.clf_mtrain = 0.0
+        self.clf_mvalid = 0.0
         self.num_params = 0
         self.num_removed = 0
         self.num_kept = 0
@@ -124,19 +125,12 @@ class AlphaRecord:
 
 
 class AlphaSearch:
-    def __init__(self, compress, isworse_fun):
+    def __init__(self, round_nsteps, mtrain_ref, mvalid_ref, isworse_fun):
         """Search for a regularizion strength parameter.
-
-        Attributes
-        ----------
-        compress : Compress
-            The `Compress` object using this `AlphaSearch`
-
-        isworse_fun : function(metric, reference) -> {True, False}
-            When is the `metric` value worse than the `reference` value?
-
         """
-        self.compress = compress
+        self.round_nsteps = round_nsteps
+        self.mtrain_ref = mtrain_ref
+        self.mvalid_ref = mvalid_ref
         self.isworse_fun = isworse_fun
 
         self.round = 0
@@ -170,16 +164,16 @@ class AlphaSearch:
         return record
 
     def isworse_tr(self, mtrain):
-        return self.isworse_fun(mtrain, self.compress.mtrain)
+        return self.isworse_fun(mtrain, self.mtrain_ref)
 
     def isworse_va(self, mvalid):
-        return self.isworse_fun(mvalid, self.compress.mvalid)
+        return self.isworse_fun(mvalid, self.mvalid_ref)
 
     def isnotworse_tr(self, mtrain):
-        return not self.isworse_fun(mtrain, self.compress.mtrain)
+        return not self.isworse_fun(mtrain, self.mtrain_ref)
 
     def isnotworse_va(self, mvalid):
-        return not self.isworse_fun(mvalid, self.compress.mvalid)
+        return not self.isworse_fun(mvalid, self.mvalid_ref)
 
     def overfits(self, mtrain, mvalid):
         cond1 = self.isnotworse_tr(mtrain)
@@ -193,7 +187,7 @@ class AlphaSearch:
         return cond1 and cond2
 
     def nsteps(self):
-        return self.compress.alpha_search_round_steps[self.round]
+        return self.round_nsteps[self.round]
 
     def set_lohis(self):
         nsteps = self.nsteps()
@@ -201,16 +195,16 @@ class AlphaSearch:
 
     def quality_filter(self, records):
         filt = filter(
-            lambda r: self.isnotworse_va(r.mvalid_clf)
+            lambda r: self.isnotworse_va(r.clf_mvalid)
             and r.frac_removed < 1.0
-            and not self.isworse_fun(r.mtrain_clf, r.mvalid_clf),  # overfitting
+            and not self.isworse_fun(r.clf_mtrain, r.clf_mvalid),  # overfitting
             records,
         )
         return filt
 
     def next_lohis(self):
         nsteps = self.nsteps()
-        num_rounds = len(self.compress.alpha_search_round_steps)
+        num_rounds = len(self.round_nsteps)
 
         self.round += 1
         if self.round >= num_rounds:
@@ -228,9 +222,9 @@ class AlphaSearch:
         r_over, r_under = None, None
         if best is None:
             for r in prev_round_records:
-                if self.overfits(r.mtrain_clf, r.mvalid_clf):
+                if self.overfits(r.clf_mtrain, r.clf_mvalid):
                     r_over = r
-                elif r_over is not None and self.underfits(r.mtrain_clf, r.mvalid_clf):
+                elif r_over is not None and self.underfits(r.clf_mtrain, r.clf_mvalid):
                     r_under = r
                     break
             if r_over is not None and r_under is not None:
@@ -254,37 +248,47 @@ class Compress:
         self.silent = silent
         self.no_convergence_warning = silent
         self.seed = seed
+        self.fit_intercept = True
 
         self.mtrain = metric(at, ytrue=self.d.ytrain, x=self.d.xtrain)
         self.mtest = metric(at, ytrue=self.d.ytest, x=self.d.xtest)
         self.mvalid = metric(at, ytrue=self.d.yvalid, x=self.d.xvalid)
 
-        self.alpha_search_round_steps = [16, 8, 4]
+        self.alpha_search_round_nsteps = [16, 8, 4]
+
+        start_record = CompressRecord(-1, at)
+        start_record.mtrain = self.mtrain
+        start_record.mtest = self.mtest
+        start_record.mvalid = self.mvalid
+        self.records = [start_record]
+
+        self.at = at
+        self.nlv = at.num_leaf_values()
+        if self.nlv > 1:  # multi-target or multiclass
+            self.at_singletarget = [at.make_singleclass(k) for k in range(self.nlv)]
+        else:  # single target or binary classification
+            self.at_singletarget = [at]
+
+        self.mtrain_fortarget = []
+        self.mtest_fortarget = []
+        self.mvalid_fortarget = []
+        for target in range(self.nlv):
+            at_target = self.at_singletarget[target]
+            self.mtrain_fortarget.append(
+                metric(at_target, ytrue=self.d.ytrain == target, x=self.d.xtrain)
+            )
+            self.mtest_fortarget.append(
+                metric(at_target, ytrue=self.d.ytest == target, x=self.d.xtest)
+            )
+            self.mvalid_fortarget.append(
+                metric(at_target, ytrue=self.d.yvalid == target, x=self.d.xvalid)
+            )
 
         if not self.silent:
             print(
                 "MODEL PERF:",
                 f"mtr {self.mtrain:.3f} mte {self.mtest:.3f} mva {self.mvalid:.3f}",
             )
-
-        start_record = CompressRecord(-1, 0.0, at)
-        start_record.mtrain = self.mtrain
-        start_record.mtest = self.mtest
-        start_record.mvalid = self.mvalid
-        self.records = [start_record]
-
-        self.set_at(at)
-
-        if not self.is_regression():
-            self.y_encoder = OneHotEncoder(drop='if_binary').fit(self.d.ytrain.reshape(-1, 1))
-
-    def set_at(self, at):
-        self.nlv = at.num_leaf_values()
-        self.at = at
-        if self.nlv > 1:  # single target
-            self.at_st = [at.make_singleclass(k) for k in range(self.nlv)]
-        else:
-            self.at_st = [at]
 
     def is_regression(self):
         return self.at.get_type() in {
@@ -298,11 +302,11 @@ class Compress:
             for k in range(self.nlv)
         ]
 
-    def _get_index_fortarget(self, leaf_index, level, include_higher_leaves):
+    def _get_index_fortarget(self, target, level, include_higher_leaves):
         index = []  # tree_index -> node_idx -> col_idex
-        num_cols = 1  # one intercept column of all ones
+        num_cols = 0  # if 1, one intercept column of all ones
 
-        for t in self.at_st[leaf_index]:
+        for t in self.at_singletarget[target]:
             index0 = {}  # leaf_id -> node_id at level
             index1 = {}  # node_id at level -> xxmatrix column index
 
@@ -337,42 +341,38 @@ class Compress:
             index.append((index0, index1))
         return index, num_cols
 
-    def _transformx(self, x, indexes):
-        blocks = []
-        for k in range(self.nlv):
-            index, num_cols = indexes[k]
-            at = self.at_st[k]
-            xxk = self._transformx_fortarget(at, x, index, num_cols)
-            blocks.append(xxk)
-        nb = len(blocks)
+    #def _transformx(self, x, indexes):
+    #    blocks = []
+    #    for k in range(self.nlv):
+    #        index, num_cols = indexes[k]
+    #        at = self.at_singletarget[k]
+    #        xxk = self._transformx_fortarget(at, x, index, num_cols)
+    #        blocks.append(xxk)
+    #    nb = len(blocks)
 
-        recipe = np.full((nb, nb), None, dtype=object)
-        for k in range(nb):
-            recipe[k, k] = blocks[k]
+    #    recipe = np.full((nb, nb), None, dtype=object)
+    #    for k in range(nb):
+    #        recipe[k, k] = blocks[k]
 
-        xx = bmat(recipe, format=blocks[0].getformat())
+    #    xx = bmat(recipe, format=blocks[0].getformat())
 
-        frac_nnz = xx.nnz / np.prod(xx.shape) if num_cols > 0 else 1.0
-        if frac_nnz > 0.01:
-            xx = xx.toarray()
-        return xx
+    #    frac_nnz = xx.nnz / np.prod(xx.shape) if num_cols > 0 else 1.0
+    #    if frac_nnz > 0.01:
+    #        xx = xx.toarray()
+    #    return xx
 
-    def _transformx_fortarget(self, at, x, index, num_cols):
+    def _transformx(self, at, x, index, num_cols):
         row_ind, col_ind = [], []
         values = []
         num_rows = x.shape[0]
 
-        # Intercept column: first column is all ones
-        row_ind += [k for k in range(num_rows)]
-        col_ind += [0 for k in range(num_rows)]
-        values += [1.0 for k in range(num_rows)]
-
         # AddTree transformation
-        for t, (index0, index1) in zip(at, index):
+        for m, t, (index0, index1) in zip(range(len(at)), at, index):
             for i, leaf_id in enumerate(t.eval_node(x)):
                 if leaf_id not in index0:
                     continue
 
+                leaf_value = t.get_leaf_value(leaf_id, 0)
                 n_at_level = index0[leaf_id]
                 if t.is_root(n_at_level) or t.is_leaf(n_at_level):
                     row_ind += [i]
@@ -380,14 +380,14 @@ class Compress:
                     col_ind += [col_idx]
                     if t.is_root(n_at_level):
                         # a coefficient * leaf values for root nodes, no bias
-                        values += [t.get_leaf_value(leaf_id, 0)]
+                        values += [leaf_value]
                     else:
                         values += [1.0]  # only bias term for leaves
                 else:
                     row_ind += [i, i]
                     col_idx = index1[n_at_level]
                     col_ind += [col_idx, col_idx + 1]
-                    values += [1.0, t.get_leaf_value(leaf_id, 0)]
+                    values += [1.0, leaf_value]
 
         if self.is_regression():  # Lasso
             xx = csc_matrix(
@@ -399,15 +399,23 @@ class Compress:
             )
         return xx
     
-    def _transformy(self, y):
+    def _transformy(self, target, y):
+        #if self.is_regression():
+        #    if y.ndim == 2:
+        #        return np.hstack([y[:, i] for i in range(self.nlv)])
+        #    return y
+        #else:
+        #    ymat = self.y_encoder.transform(y.reshape(-1, 1)).toarray()
+        #    ystacked = np.hstack([ymat[:, i] for i in range(self.nlv)])
+        #    return ystacked
         if self.is_regression():
             if y.ndim == 2:
-                return np.hstack([y[:, i] for i in range(self.nlv)])
-            return y
+                return y[:, target]
+            else:
+                assert target == 0
+                return y
         else:
-            ymat = self.y_encoder.transform(y.reshape(-1, 1)).toarray()
-            ystacked = np.hstack([ymat[:, i] for i in range(self.nlv)])
-            return ystacked
+            return (y == target).astype(int)
 
     def compress(self,
                  *,
@@ -461,75 +469,134 @@ class Compress:
         return self.records[-1].at
 
     def compress_level(self, level, isworse_fun):
-        tindex = time.time()
-        indexes = self._get_indexes(level, True)
-        tindex = time.time() - tindex
+        bests = []
+        new_full_at = self._new_empty_addtree(self.nlv)
 
-        ttransform = time.time()
-        xxtrain = self._transformx(self.d.xtrain, indexes)
-        yytrain = self._transformy(self.d.ytrain)
-        xxvalid = self._transformx(self.d.xvalid, indexes)
-        yyvalid = self._transformy(self.d.yvalid)
-        ttransform = time.time() - ttransform
+        tindex = 0.0
+        ttransform = 0.0
 
-        if not self.silent:
-            print(
-                f"Level {level} xxtrain.shape {xxtrain.shape}",
-                "dense" if isinstance(xxtrain, np.ndarray) else "sparse",
-                f"transform time: {tindex:.2f}s, {ttransform:.2f}s"
+        for target in range(self.nlv):
+            t = time.time()
+            index, num_cols = self._get_index_fortarget(target, level, True)
+            tindex += time.time() - t
+            at = self.at_singletarget[target]
+
+            t = time.time()
+            xxtrain = self._transformx(at, self.d.xtrain, index, num_cols)
+            yytrain = self._transformy(target, self.d.ytrain)
+            xxvalid = self._transformx(at, self.d.xvalid, index, num_cols)
+            yyvalid = self._transformy(target, self.d.yvalid)
+            ttransform += time.time() - t
+
+            alpha_search = AlphaSearch(
+                self.alpha_search_round_nsteps,
+                self.mtrain_fortarget[target],
+                self.mvalid_fortarget[target],
+                isworse_fun,
             )
-        alpha_search = AlphaSearch(self, isworse_fun)
-        clf = self._get_regularized_lin_clf(xxtrain)
+            clf = self._get_regularized_lin_clf(xxtrain)
 
-        tsearch = time.time()
-        for alpha_record in alpha_search:
-            self._update_lin_clf_alpha(clf, alpha_record.alpha)
-            clf = self.fit_coefficients(clf, xxtrain, yytrain, xxvalid, yyvalid, alpha_record)
+            tsearch = time.time()
+            for alpha_record in alpha_search:
+                self._update_lin_clf_alpha(clf, alpha_record.alpha)
+                clf = self.fit_coefficients(clf, xxtrain, yytrain, xxvalid, yyvalid, alpha_record)
 
-            if not self.silent:
-                print_fit(alpha_record, alpha_search)
+                if not self.silent:
+                    print_fit(alpha_record, alpha_search)
 
-            #atp = self.prune_trees(clf.intercept_, clf.coef_, indexes)
-            #print(atp)
-            #print(clf.intercept_)
-            #print(clf.coef_)
+                atp = self.prune_trees(at, clf.intercept_, clf.coef_, index)
 
-            #print(self._clf_decision_fun(clf, xxtrain))
-            #print(atp.eval(self.d.xtrain))
-            #print(self._clf_decision_fun(clf, xxtrain) - atp.eval(self.d.xtrain))
-            
-            #raise RuntimeError("check")
+                #diff = atp.eval(self.d.xtrain)[:, 0]-clf.decision_function(xxtrain) 
+                #assert diff < 1e-15
 
-        tsearch = time.time() - tsearch
+            tsearch = time.time() - tsearch
 
-        best = alpha_search.get_best_record()
-        best_alpha = 0.0
-        clf_mtrain = self.records[-1].clf_mtrain
-        clf_mvalid = self.records[-1].clf_mvalid
+            best = alpha_search.get_best_record()
 
-        if best is not None:
-            intercept = best.intercept
-            coefs = best.coefs
-            atp = self.prune_trees(intercept, coefs, indexes)
-            self.set_at(atp)
-            clf_mtrain = best.mtrain_clf
-            clf_mvalid = best.mvalid_clf
+            if best is not None:
+                intercept = best.intercept
+                coefs = best.coefs
+                atp = self.prune_trees(at, intercept, coefs, index)
+
+                print(f"mtrain {best.clf_mtrain:.4f}")
+                print(f"  atp  {metric(atp, ytrue=self.d.ytrain==target, x=self.d.xtrain):.4f}", atp)
+                print(f"  at   {metric(at, ytrue=self.d.ytrain==target, x=self.d.xtrain):.4f}", at)
+                print(f"mvalid {best.clf_mvalid:.4f}")
+                print(f"  atp  {metric(atp, ytrue=self.d.yvalid==target, x=self.d.xvalid):.4f}")
+                print(f"  at   {metric(at, ytrue=self.d.yvalid==target, x=self.d.xvalid):.4f}")
+
+                self.at_singletarget[target] = atp
+                bests.append(best)
+            else:
+                bests.append(None)
+                atp = at
+                print(
+                    f"WARNING: weights of target {target} not updated,",
+                    "combined model might fail",
+                )
+
+            new_full_at.add_trees(atp, target)
+
+        self.at = new_full_at
 
         # record
         mtrain_prun = metric(self.at, ytrue=self.d.ytrain, x=self.d.xtrain)
         mtest_prun = metric(self.at, ytrue=self.d.ytest, x=self.d.xtest)
         mvalid_prun = metric(self.at, ytrue=self.d.yvalid, x=self.d.xvalid)
-        record = CompressRecord(level, best_alpha, self.at)
+        record = CompressRecord(level, self.at)
         record.mtrain = mtrain_prun
         record.mtest = mtest_prun
         record.mvalid = mvalid_prun
-        record.clf_mtrain = clf_mtrain
-        record.clf_mvalid = clf_mvalid
+        record.alphas = [b.alpha if b is not None else -1.0 for b in bests]
+        record.clf_mtrain = [b.clf_mtrain if b is not None else np.nan for b in bests]
+        record.clf_mvalid = [b.clf_mvalid if b is not None else np.nan for b in bests]
         record.tindex = tindex
         record.ttransform = ttransform
         record.tsearch = tsearch
 
         return record
+
+    #def compress_level_fortarget(self, target, level, isworse_fun, index):
+
+    #    ttransform = time.time()
+    #    xxtrain = self._transformx_fortarget(target, self.d.xtrain, index)
+    #    yytrain = self._transformy_fortarget(target, self.d.ytrain)
+    #    xxvalid = self._transformx_fortarget(target, self.d.xvalid, index)
+    #    yyvalid = self._transformy_fortarget(target, self.d.yvalid)
+    #    ttransform = time.time() - ttransform
+
+    #    if not self.silent:
+    #        print(
+    #            f"Level {level}, target {target}, xxtrain.shape {xxtrain.shape},",
+    #            "dense," if isinstance(xxtrain, np.ndarray) else "sparse,",
+    #            f"transform time: {ttransform:.2f}s"
+    #        )
+    #    alpha_search = AlphaSearch(self, isworse_fun)
+    #    clf = self._get_regularized_lin_clf(xxtrain)
+
+    #    tsearch = time.time()
+    #    for alpha_record in alpha_search:
+    #        self._update_lin_clf_alpha(clf, alpha_record.alpha)
+    #        clf = self.fit_coefficients(clf, xxtrain, yytrain, xxvalid, yyvalid, alpha_record)
+
+    #        if not self.silent:
+    #            print_fit(alpha_record, alpha_search)
+
+    #        #atp = self.prune_trees(clf.intercept_, clf.coef_, indexes)
+    #        #print(atp)
+    #        #print(clf.intercept_)
+    #        #print(clf.coef_)
+
+    #        #print(self._clf_decision_fun(clf, xxtrain))
+    #        #print(atp.eval(self.d.xtrain))
+    #        #print(self._clf_decision_fun(clf, xxtrain) - atp.eval(self.d.xtrain))
+    #        
+    #        #raise RuntimeError("check")
+
+    #    tsearch = time.time() - tsearch
+
+    #    return alpha_search.get_best_record()
+
 
     def fit_coefficients(self, clf, xxtrain, yytrain, xxvalid, yyvalid, alpha_record):
         import warnings
@@ -548,14 +615,14 @@ class Compress:
         num_removed = np.sum(np.abs(clf.coef_) < 1e-6)
         frac_removed = num_removed / num_params
 
-        yhat_train = self._clf_predict(clf, xxtrain)
-        yhat_valid = self._clf_predict(clf, xxvalid)
+        yhat_train = clf.predict(xxtrain)
+        yhat_valid = clf.predict(xxvalid)
 
-        alpha_record.mtrain_clf = metric(
-            self.at, ytrue=self.d.ytrain, ypred=yhat_train
+        alpha_record.clf_mtrain = metric(
+            self.at, ytrue=yytrain, ypred=yhat_train
         )
-        alpha_record.mvalid_clf = metric(
-            self.at, ytrue=self.d.yvalid, ypred=yhat_valid
+        alpha_record.clf_mvalid = metric(
+            self.at, ytrue=yyvalid, ypred=yhat_valid
         )
         alpha_record.num_params = num_params
         alpha_record.num_removed = num_removed
@@ -567,26 +634,26 @@ class Compress:
 
         return clf
 
-    def _clf_decision_fun(self, clf, xx):
-        if self.is_regression():
-            return clf.predict(xx).reshape(-1, 1)
-        else:
-            ypred = clf.decision_function(xx)
-            num_ex = xx.shape[0] // self.nlv
-            ytargets = []
-            for k in range(self.nlv):
-                ytarget = ypred[k * num_ex : (k + 1) * num_ex].reshape(-1, 1)
-                ytargets.append(ytarget)
-            return np.hstack(ytargets)
+    #def _clf_decision_fun(self, clf, xx):
+    #    if self.is_regression():
+    #        return clf.predict(xx).reshape(-1, 1)
+    #    else:
+    #        ypred = clf.decision_function(xx)
+    #        num_ex = xx.shape[0] // self.nlv
+    #        ytargets = []
+    #        for k in range(self.nlv):
+    #            ytarget = ypred[k * num_ex : (k + 1) * num_ex].reshape(-1, 1)
+    #            ytargets.append(ytarget)
+    #        return np.hstack(ytargets)
 
-    def _clf_predict(self, clf, xx):
-        df = self._clf_decision_fun(clf, xx)
-        if self.is_regression():
-            return df
-        elif self.nlv == 1: # binary classification
-            return df > 0.0
-        else:
-            return df.argmax(axis=1)
+    #def _clf_predict(self, clf, xx):
+    #    df = self._clf_decision_fun(clf, xx)
+    #    if self.is_regression():
+    #        return df
+    #    elif self.nlv == 1: # binary classification
+    #        return df > 0.0
+    #    else:
+    #        return df.argmax(axis=1)
 
     def _get_regularized_lin_clf(self, xxtrain):
         self.seed += 1
@@ -594,7 +661,7 @@ class Compress:
         if self.is_regression():
             precompute = isinstance(xxtrain, np.ndarray)  # dense only
             return Lasso(
-                fit_intercept=False,
+                fit_intercept=self.fit_intercept,
                 alpha=1.0,
                 random_state=self.seed,
                 max_iter=5_000,
@@ -604,7 +671,7 @@ class Compress:
             )
         else:
             return LogisticRegression(
-                fit_intercept=False,
+                fit_intercept=self.fit_intercept,
                 penalty="l1",
                 C=1.0,
                 solver="liblinear",
@@ -626,42 +693,22 @@ class Compress:
             assert clf.penalty == "l1"
             clf.C = 1.0 / alpha
 
-    def prune_trees(self, intercept, coefs, indexes):
+    def _new_empty_addtree(self, num_leaf_values):
         if self.is_regression():
-            #base_scores = intercept
-            coefs = coefs[:]
             at_type = veritas.AddTreeType.REGR
         else:
-            #base_scores = intercept
-            coefs = coefs[0, :]
             at_type = veritas.AddTreeType.CLF_SOFTMAX
+        return veritas.AddTree(num_leaf_values, at_type)
 
-        if self.nlv == 1:
-            index, num_cols = indexes[0]
-            return self.prune_trees_fortarget(self.at, at_type, coefs, index)
+    def prune_trees(self, at, intercept, coefs, index):
+        if self.is_regression():
+            base_score = intercept[0] if self.fit_intercept else 0.0
+            coefs = coefs[:]
         else:
-            atp_full = veritas.AddTree(self.nlv, at_type)
-            num_cols_offset = 0
+            base_score = intercept[0] if self.fit_intercept else 0.0
+            coefs = coefs[0, :]
 
-            # Extract the pruned trees per target, and combine it in the single
-            # multiclass/multitarget AddTree ensemble
-            for k in range(self.nlv):
-                index, num_cols = indexes[k]
-                coefs_pertarget = coefs[num_cols_offset:num_cols_offset+num_cols]
-                num_cols_offset += num_cols
-                atp_pertarget = self.prune_trees_fortarget(
-                    self.at_st[k], at_type, coefs_pertarget, index
-                )
-
-                atp_full.add_trees(atp_pertarget, k)
-                atp_full.set_base_score(k, atp_pertarget.get_base_score(0))
-
-            return atp_full
-
-    def prune_trees_fortarget(self, at, at_type, coefs, index):
-        base_score = coefs[0]
-
-        atp = veritas.AddTree(1, at_type)
+        atp = self._new_empty_addtree(1)
         atpp = atp.copy()
         offset = 0
 
@@ -683,6 +730,65 @@ class Compress:
         atp.set_base_score(0, base_score)
         atpp.set_base_score(0, base_score)
         return atpp
+
+
+    #def prune_trees(self, intercept, coefs, indexes):
+    #    if self.is_regression():
+    #        coefs = coefs[:]
+    #        at_type = veritas.AddTreeType.REGR
+    #    else:
+    #        coefs = coefs[0, :]
+    #        at_type = veritas.AddTreeType.CLF_SOFTMAX
+
+    #    if self.nlv == 1:
+    #        index, num_cols = indexes[0]
+    #        return self.prune_trees_fortarget(self.at, at_type, intercept, coefs, index)
+    #    else:
+    #        atp_full = veritas.AddTree(self.nlv, at_type)
+    #        num_cols_offset = 0
+
+    #        # Extract the pruned trees per target, and combine it in the single
+    #        # multiclass/multitarget AddTree ensemble
+    #        for k in range(self.nlv):
+    #            index, num_cols = indexes[k]
+    #            coefs_pertarget = coefs[num_cols_offset:num_cols_offset+num_cols]
+    #            num_cols_offset += num_cols
+    #            atp_pertarget = self.prune_trees_fortarget(
+    #                self.at_singletarget[k], at_type, coefs_pertarget, index
+    #            )
+
+    #            atp_full.add_trees(atp_pertarget, k)
+    #            atp_full.set_base_score(k, atp_pertarget.get_base_score(0))
+
+    #        return atp_full
+
+    #def prune_trees_fortarget(self, at, at_type, intercept, coefs, index):
+    #    print(intercept)
+    #    print(coefs)
+    #    base_score = intercept[0]
+
+    #    atp = veritas.AddTree(1, at_type)
+    #    atpp = atp.copy()
+    #    offset = 0
+
+    #    for m, t, (index0, index1) in zip(range(len(at)), at, index):
+    #        # special case: if coef of full tree is 0.0, then drop the tree
+    #        if t.root() in index1:
+    #            offset = index1[t.root()]
+    #            coef = coefs[offset]
+    #            if coef == 0.0:
+    #                continue
+    #        self._copy_tree(t, atp.add_tree(), coefs, index1)
+
+    #        tp = atp[len(atp) - 1]
+    #        pruner = _TreeZeroLeafPruner(tp)
+    #        if not pruner.is_root_zero():
+    #            tpp = atpp.add_tree()
+    #            pruner.prune(tp.root(), tpp, tpp.root())
+
+    #    atp.set_base_score(0, base_score)
+    #    atpp.set_base_score(0, base_score)
+    #    return atpp
 
     def _copy_tree(self, t, tc, coefs, index1):
         self._copy_subtree(t, t.root(), tc, tc.root(), coefs, index1)

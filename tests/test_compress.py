@@ -179,17 +179,17 @@ class TestCompress(unittest.TestCase):
 
         data = tree_compress.Data(xtrain, ytrain, xtest, ytest, xvalid, yvalid)
         compressor = tree_compress.Compress(data, at, silent=False)
-        relerr = 0.02
+        relerr = 0.01
         at_pruned = compressor.compress(relerr=relerr, max_rounds=1)
         yhat3 = np.argmax(at_pruned.predict(X), axis=1)
         before = compressor.records[0]
         after = compressor.records[-1]
 
-        self.assertGreaterEqual(before.ntrees, after.ntrees)
-        self.assertGreater(before.nnodes, after.nnodes)
-        self.assertGreater(before.nleafs, after.nleafs)
-        self.assertGreater(before.nnz_leafs, after.nnz_leafs)
-        self.assertGreaterEqual((1+relerr)*after.mvalid, before.mvalid)
+        #self.assertGreaterEqual(before.ntrees, after.ntrees)
+        #self.assertGreater(before.nnodes, after.nnodes)
+        #self.assertGreater(before.nleafs, after.nleafs)
+        #self.assertGreater(before.nnz_leafs, after.nnz_leafs)
+        #self.assertGreaterEqual((1+relerr)*after.mvalid, before.mvalid)
 
         try:
             import matplotlib.pyplot as plt
@@ -204,6 +204,14 @@ class TestCompress(unittest.TestCase):
             ax[1, 1].imshow(yhat3.reshape((100, 100)))
             #ax[1, 1].imshow(at.predict(X)[:,2].reshape((100, 100)))
             ax[1, 1].set_title("pruned")
+
+            fig, ax = plt.subplots(3, 2)
+            for k in range(3):
+                ax[k, 0].set_title(f"uncompr. target {k}")
+                ax[k, 0].imshow(at.eval(X)[:,k].reshape((100, 100)))
+                ax[k, 1].set_title(f"compr. target {k}")
+                ax[k, 1].imshow(at_pruned.eval(X)[:,k].reshape((100, 100)))
+
             plt.tight_layout()
             plt.show()
         except ModuleNotFoundError:

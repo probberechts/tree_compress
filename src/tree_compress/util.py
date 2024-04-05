@@ -94,16 +94,16 @@ def print_fit(r, alpha_search):
 
     RST = colorama.Style.RESET_ALL
 
-    mtrain = alpha_search.compress.mtrain
-    mvalid = alpha_search.compress.mvalid
+    mtrain = alpha_search.mtrain_ref
+    mvalid = alpha_search.mvalid_ref
 
-    ctr = _color(r.mtrain_clf, mtrain, alpha_search)
-    cte = _color(r.mvalid_clf, mvalid, alpha_search)
+    ctr = _color(r.clf_mtrain, mtrain, alpha_search)
+    cte = _color(r.clf_mvalid, mvalid, alpha_search)
 
     status = f"{colorama.Fore.GREEN}fit ok{RST}"
-    if alpha_search.underfits(r.mtrain_clf, r.mvalid_clf):
+    if alpha_search.underfits(r.clf_mtrain, r.clf_mvalid):
         status = f"{colorama.Fore.YELLOW}under {RST}"
-    elif alpha_search.overfits(r.mtrain_clf, r.mvalid_clf):
+    elif alpha_search.overfits(r.clf_mtrain, r.clf_mvalid):
         status = f"{colorama.Fore.RED}over  {RST}"
 
     print(f"{mtrain:7.3f} {mvalid:7.3f} ->", end=" ")
@@ -111,7 +111,7 @@ def print_fit(r, alpha_search):
     ndigits = int(np.ceil(np.log10(1 + r.num_params)))
 
     print(
-        f"{ctr}{r.mtrain_clf:7.3f}{RST} {cte}{r.mvalid_clf:7.3f}{RST},",
+        f"{ctr}{r.clf_mtrain:7.3f}{RST} {cte}{r.clf_mvalid:7.3f}{RST},",
         f"{r.frac_removed*100:3.0f}% removed",
         f"(alpha={r.alpha:9.4f},",
         # f"nnz={r['num_kept']}/{r['num_params']})",
