@@ -4,48 +4,11 @@ import veritas
 import itertools
 
 from dataclasses import dataclass
-from .util import count_nnz_leafs, metric, print_metrics, print_fit, isworse_relerr
+from .util import count_nnz_leafs, metric, print_metrics, print_fit, isworse_relerr, Data
 from scipy.sparse import csr_matrix, csc_matrix, bmat
 from functools import partial
 from sklearn.linear_model import LogisticRegression, Lasso
 from sklearn.preprocessing import OneHotEncoder
-
-
-@dataclass
-class Data:
-    """The train, test, and validation data and labels.
-
-    Attributes:
-        xtrain (np.ndarray): The data that was used to train the tree ensemble.
-        ytrain (np.ndarray): Train labels.
-
-        xtest  (np.ndarray): The data that is used to evaluate the tree ensemble and the
-            pruned tree ensemble. This data is **not** used in the learning or the
-            compression process.
-        ytest  (np.ndarray): Test labels.
-
-        xvalid (np.ndarray): This data is used to tune the strenght of the
-            regularization coefficient alpha. This data should not have been used to
-            train the ensemble to avoid overfitting on the data used to train the
-            ensemble.
-        yvalid (np.ndarray): Validation labels.
-
-    """
-
-    # The data that was used to train the tree ensemble
-    xtrain: np.ndarray
-    ytrain: np.ndarray
-
-    # The data that is used to evaluate the tree ensemble and the pruned tree ensemble.
-    # This data is **not** used in the learning or the compression process.
-    xtest: np.ndarray
-    ytest: np.ndarray
-
-    # This data is used to tune the strenght of the regularization coefficient alpha.
-    # This data should not have been used to train the ensemble to avoid overfitting on
-    # the data used to train the ensemble.
-    xvalid: np.ndarray
-    yvalid: np.ndarray
 
 
 @dataclass(init=False)
@@ -454,6 +417,23 @@ class Compress:
                 print_metrics("orig", r0)
                 print_metrics("prev", r1, rcmp=r0, cmp=isworse_fun)
                 print_metrics("now", r, rcmp=r0, cmp=isworse_fun)
+
+                print("tr", self.mtrain_fortarget)
+                print("te", self.mtest_fortarget)
+                print("va", self.mvalid_fortarget)
+
+                for target in range(self.nlv):
+                    at_target = self.at_singletarget[target]
+                    print(
+                        target, ":",
+                        np.array([
+                        metric(at_target, ytrue=self.d.ytrain == target, x=self.d.xtrain) - self.mtrain_fortarget[target],
+                        metric(at_target, ytrue=self.d.ytest == target, x=self.d.xtest) - self.mtest_fortarget[target],
+                        metric(at_target, ytrue=self.d.yvalid == target, x=self.d.xvalid) - self.mvalid_fortarget[target]
+                        ])
+                    )
+                    print
+
                 print()
 
             self.records.append(r)
@@ -702,7 +682,7 @@ class Compress:
 
     def prune_trees(self, at, intercept, coefs, index):
         if self.is_regression():
-            base_score = intercept[0] if self.fit_intercept else 0.0
+            base_score = intercept if self.fit_intercept else 0.0
             coefs = coefs[:]
         else:
             base_score = intercept[0] if self.fit_intercept else 0.0

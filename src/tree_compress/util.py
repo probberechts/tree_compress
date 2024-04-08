@@ -4,6 +4,43 @@ from veritas import AddTreeType
 from sklearn.metrics import root_mean_squared_error
 from sklearn.metrics import accuracy_score
 
+from dataclasses import dataclass
+
+@dataclass
+class Data:
+    """The train, test, and validation data and labels.
+
+    Attributes:
+        xtrain (np.ndarray): The data that was used to train the tree ensemble.
+        ytrain (np.ndarray): Train labels.
+
+        xtest  (np.ndarray): The data that is used to evaluate the tree ensemble and the
+            pruned tree ensemble. This data is **not** used in the learning or the
+            compression process.
+        ytest  (np.ndarray): Test labels.
+
+        xvalid (np.ndarray): This data is used to tune the strenght of the
+            regularization coefficient alpha. This data should not have been used to
+            train the ensemble to avoid overfitting on the data used to train the
+            ensemble.
+        yvalid (np.ndarray): Validation labels.
+
+    """
+
+    # The data that was used to train the tree ensemble
+    xtrain: np.ndarray
+    ytrain: np.ndarray
+
+    # The data that is used to evaluate the tree ensemble and the pruned tree ensemble.
+    # This data is **not** used in the learning or the compression process.
+    xtest: np.ndarray
+    ytest: np.ndarray
+
+    # This data is used to tune the strenght of the regularization coefficient alpha.
+    # This data should not have been used to train the ensemble to avoid overfitting on
+    # the data used to train the ensemble.
+    xvalid: np.ndarray
+    yvalid: np.ndarray
 
 def neg_root_mean_squared_error(ytrue, ypred):
     return -root_mean_squared_error(ytrue, ypred)
@@ -14,7 +51,7 @@ def count_nnz_leafs(at):
     for t in at:
         for lid in t.get_leaf_ids():
             lvals = t.get_leaf_values(lid)
-            nnz += int(np.any(np.abs(lvals) > 1e-5))
+            nnz += np.sum(np.abs(lvals) > 1e-5)
     return nnz
 
 
