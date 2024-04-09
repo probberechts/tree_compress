@@ -5,7 +5,7 @@ import itertools
 
 from dataclasses import dataclass
 
-from sklearn.linear_model import Lasso, LinearRegression
+from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression
 from sklearn.preprocessing import OneHotEncoder
 
 from .util import count_nnz_leafs, print_metrics, print_fit
@@ -218,15 +218,17 @@ def _at_predlab(at, x):
     else:
         return at.eval(x).argmax(axis=1)
 
-def _lasso_predlab(isregr, clf, x):
+def _lasso_predlab(isregr, nlv, clf, x):
     """ Predict hard label for Lasso classifier """
     if isregr:
         return clf.predict(x)
     pred = clf.predict(x)
-    if pred.shape[1] > 1:
+    if nlv > 1:
+        nexamples = x.shape[0] // nlv
+        pred = pred.reshape(nexamples, nlv, order="C")
         return pred.argmax(axis=1)
     else:
-        raise RuntimeError("not impl")
+        return pred > 0.0
 
 
 
@@ -251,7 +253,7 @@ class Compress:
         self.seed = seed
         self.silent = silent
         self.no_convergence_warning = silent
-        self.tol = 1e-4
+        self.tol = 1e-6
 
         self.mtrain = self.metric(self.d.ytrain, _at_predlab(at, self.d.xtrain))
         self.mtest = self.metric(self.d.ytest, _at_predlab(at, self.d.xtest))
@@ -267,7 +269,8 @@ class Compress:
             ).fit(self.d.ytrain.reshape(-1, 1))
 
             def trsf(y):
-                return self.y_encoder.transform(y) * 2.0 - 1.0
+                ymat = self.y_encoder.transform(y) * 2.0 - 1.0
+                return ymat.flatten(order="C")
 
             self.ytrain = trsf(self.d.ytrain.reshape(-1, 1))
             self.ytest = trsf(self.d.ytest.reshape(-1, 1))
@@ -346,11 +349,11 @@ class Compress:
             self.mvalid,
             self.isworse,
         )
-        clf = self._get_lasso()
+        clf = self._get_linclf()
 
         tsearch = time.time()
         for alpha_record in alpha_search:
-            self._update_lasso(clf, alpha_record.alpha)
+            self._update_clf(clf, alpha_record.alpha)
             clf = self._fit_coefficients(clf, xxtrain, xxvalid, alpha_record)
 
             #at = self._prune_trees(alpha_record.intercept, alpha_record.coefs, mapping)
@@ -399,7 +402,7 @@ class Compress:
 
     def _get_matrix_mapping(self, at, level):
         mapping = []  # tree_index -> node_idx -> col_idex
-        num_cols = 0  # if 1, one intercept column of all ones
+        num_cols = self.nlv  # if 1, one intercept column of all ones
 
         for t in at:
             mapping0 = {}  # leaf_id -> node_id at level along root-to-leaf path
@@ -419,23 +422,25 @@ class Compress:
 
                 if n_at_level not in mapping1:
                     mapping1[n_at_level] = num_cols
-                    if t.is_root(n_at_level):
-                        num_cols += self.nlv
-                    elif t.is_leaf(n_at_level):
+                    if t.is_root(n_at_level):    # only multiplicative coefficients
                         num_cols += 1
+                    elif t.is_leaf(n_at_level):  # only biases
+                        num_cols += self.nlv
                     else:
-                        num_cols += 1+self.nlv
+                        num_cols += 1 + self.nlv
 
             mapping.append((mapping0, mapping1))
         return mapping, num_cols
 
     def _transformx(self, at, x, mapping, num_cols):
         num_rows = x.shape[0]
-        xx = np.zeros((num_rows, num_cols), dtype=np.float32, order="F")
+        xx = np.zeros((self.nlv * num_rows, num_cols), dtype=np.float32, order="F")
 
         numba_success = self._transformx_numba(at, x, xx, mapping)
         if numba_success:
             return xx
+
+        raise RuntimeError("not impl")
 
         # AddTree transformation
         for t, (mapping0, mapping1) in zip(at, mapping):
@@ -497,8 +502,13 @@ class Compress:
             cache=False,
         )
         def __transformx(nlv, xx, xnode, leafvals, n_at_levels, col_idxs, node_types):
-            for m in range(xnode.shape[0]):  # could use prange here
-                for i in range(xnode.shape[1]):
+            for i in range(xnode.shape[1]):  # iterate over examples
+                for target in range(nlv):
+                    ii = i*nlv + target
+                    xx[ii, target] = 1.0  # intercept for target
+
+            for m in range(xnode.shape[0]):  # iterate over trees (could use prange)
+                for i in range(xnode.shape[1]):  # iterate over examples
                     leaf_id = xnode[m, i]
                     n_at_level = n_at_levels[m, leaf_id]
                     col_idx = col_idxs[m, n_at_level]
@@ -507,13 +517,14 @@ class Compress:
                     is_root = (node_type & 0b01) == 0b01
                     is_leaf = (node_type & 0b10) == 0b10
 
-                    if is_root or not is_leaf:
-                        for target in range(nlv):
-                            leaf_value = leafvals[m, leaf_id, target]
-                            xx[i, col_idx+target] = leaf_value
-                        col_idx += nlv
-                    if is_leaf or not is_root:
-                        xx[i, col_idx] = 1.0
+                    for target in range(nlv):
+                        ii = i*nlv + target
+                        leaf_value = leafvals[m, leaf_id, target]
+                        if is_root or not is_leaf:
+                            xx[ii, col_idx] = leaf_value
+                        if is_leaf or not is_root:
+                            offset = int(is_root or not is_leaf)
+                            xx[ii, col_idx+offset+target] = 1.0
 
         #t = time.time()
         __transformx(self.nlv, xx, xnode, leafvals, n_at_levels, col_idxs, node_types)
@@ -523,23 +534,38 @@ class Compress:
 
         return True
 
-    def _get_lasso(self):
+    def _get_linclf(self):
         self.seed += 1
 
-        return Lasso(
-            fit_intercept=True,
-            alpha=1.0,
-            random_state=self.seed,
-            max_iter=10_000,
+        #return Lasso(
+        #    fit_intercept=False,
+        #    alpha=1.0,
+        #    random_state=self.seed,
+        #    max_iter=10_000,
+        #    tol=self.tol,
+        #    warm_start=False,
+        #    precompute=True,
+        #    selection="cyclic",
+        #)
+        return LogisticRegression(
+            fit_intercept=False,
+            penalty="l1",
+            C=1.0,
+            solver="liblinear",
+            max_iter=5_000,
             tol=self.tol,
+            n_jobs=1,
+            random_state=self.seed,
             warm_start=True,
-            precompute=True,
-            selection="cyclic",
         )
 
-    def _update_lasso(self, clf, alpha):
+    def _update_clf(self, clf, alpha):
         assert alpha > 0.0
-        clf.alpha = 0.001 * alpha
+        if isinstance(clf, Lasso):
+            clf.alpha = 0.001 * alpha
+        elif isinstance(clf, LogisticRegression):
+            assert clf.penalty == "l1"
+            clf.C = 1.0 / alpha
 
     def _fit_coefficients(self, clf, xxtrain, xxvalid, alpha_record):
         import warnings
@@ -555,12 +581,12 @@ class Compress:
         fit_time = time.time() - fit_time
 
         num_params = np.prod(clf.coef_.shape)
-        num_removed = np.sum(np.abs(clf.coef_) < 1e-6)
+        num_removed = np.sum(np.abs(clf.coef_) < self.tol)
         frac_removed = num_removed / num_params
 
         isregr = self.is_regression()
-        yhat_train = _lasso_predlab(isregr, clf, xxtrain)
-        yhat_valid = _lasso_predlab(isregr, clf, xxvalid)
+        yhat_train = _lasso_predlab(isregr, self.nlv, clf, xxtrain)
+        yhat_valid = _lasso_predlab(isregr, self.nlv, clf, xxvalid)
 
         #wrongs = np.nonzero((yhat_valid != self.d.yvalid))[0]
         #print(wrongs)
@@ -580,7 +606,7 @@ class Compress:
         alpha_record.num_kept = num_params - num_removed
         alpha_record.frac_removed = frac_removed
         alpha_record.intercept = np.copy(clf.intercept_)
-        alpha_record.coefs = np.copy(clf.coef_)
+        alpha_record.coefs = np.copy(clf.coef_.ravel())
         alpha_record.fit_time = fit_time
 
         return clf
@@ -625,14 +651,13 @@ class Compress:
     def _prune_trees(self, at, intercept, coefs, mapping):
         atp = veritas.AddTree(self.nlv, veritas.AddTreeType.CLF_MEAN)
         atpp = atp.copy()
-        offset = 0
 
         for t, (mapping0, mapping1) in zip(at, mapping):
             # special case: if coef of full tree is 0.0, then drop the tree
             if t.root() in mapping1:
-                offset = mapping1[t.root()]
-                coef = coefs[:, offset:offset+self.nlv]
-                if np.all(np.abs(coef) <= self.tol):
+                col_idx = mapping1[t.root()]
+                coef = coefs[col_idx]
+                if coef < self.tol:
                     continue
 
             self._copy_tree(t, atp.add_tree(), coefs, mapping1)
@@ -643,33 +668,35 @@ class Compress:
                 tpp = atpp.add_tree()
                 pruner.prune(tp.root(), tpp, tpp.root())
 
-        for k in range(self.nlv):
-            atpp.set_base_score(k, intercept[k])
+        for target in range(self.nlv):
+            base_score = coefs[target]
+            atpp.set_base_score(target, base_score)
         return atpp
 
     def _copy_tree(self, t, tc, coefs, mapping1):
         self._copy_subtree(t, t.root(), tc, tc.root(), coefs, mapping1)
 
     def _copy_subtree(self, t, n, tc, nc, coefs, mapping1):
-        eye_coef = np.eye(self.nlv)
+        coefs[abs(coefs) < self.tol] = 0.0
+
         zero_bias = np.zeros(self.nlv)
-        stack = [(n, nc, eye_coef, zero_bias)]
+        stack = [(n, nc, 1.0, zero_bias)]
         while len(stack) > 0:
             n, nc, coef, bias = stack.pop()
 
             if n in mapping1:
-                offset = mapping1[n]
+                col_idx = mapping1[n]
                 if t.is_root(n):
-                    coef = coefs[:, offset:offset+self.nlv]
+                    coef = coefs[col_idx]
                     bias = zero_bias
                 elif t.is_leaf(n):
-                    coef = 0.0 # will cut branch in next if
-                    bias = coefs[:, offset]
+                    coef = 0.0
+                    bias = coefs[col_idx:col_idx+self.nlv]
                 else:
-                    coef = coefs[:, offset:offset+self.nlv]
-                    bias = coefs[:, offset+self.nlv]
+                    coef = coefs[col_idx]
+                    bias = coefs[col_idx+1:col_idx+self.nlv+1]
 
-                if np.all(np.abs(coef) <= self.tol):  # skip the branch, just predict bias
+                if coef <= self.tol:  # skip the branch, just predict bias
                     #print(f"cutting off branch {n}, leaf value {bias.round(3)}")
                     for k in range(self.nlv):
                         tc.set_leaf_value(nc, k, bias[k])
@@ -684,11 +711,11 @@ class Compress:
                 stack.append((t.right(n), tc.right(nc), coef, bias))
                 stack.append((t.left(n), tc.left(nc), coef, bias))
             else:
-                leaf_values = np.array([t.get_leaf_value(n, k) for k in range(self.nlv)])
-                for k in range(self.nlv):
-                    leaf_value = bias[k] + np.dot(coef[k, :], leaf_values)
-                    #print(f"new leaf value node {nc} target {k} {leaf_value}")
-                    tc.set_leaf_value(nc, k, leaf_value)
+                for target in range(self.nlv):
+                    #leaf_value = bias[k] + np.dot(coef[k, :], leaf_values)
+                    leaf_value = bias[target] + coef * t.get_leaf_value(n, target)
+                    #print(f"new leaf value node {nc} target {target} {leaf_value}")
+                    tc.set_leaf_value(nc, target, leaf_value)
 
 
 class _TreeZeroLeafPruner:
