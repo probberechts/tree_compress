@@ -2,3 +2,10 @@ dist
 __pycache__
 *.egg-info/
 .ipynb_checkpoints
+experiment/cluster
+experiment/tex
+experiment/results
+experiment/*.txt
+experiment/get_results.sh
+sync.sh
+examples/tex

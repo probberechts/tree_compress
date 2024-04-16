@@ -5,7 +5,7 @@ import itertools
 
 from dataclasses import dataclass
 
-from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression
+from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, ElasticNet
 from sklearn.preprocessing import OneHotEncoder
 
 from .util import count_nnz_leafs, print_metrics, print_fit
@@ -157,6 +157,7 @@ class AlphaSearch:
         filt = filter(
             lambda r: self.isnotworse_va(r.clf_mvalid)
             and r.frac_removed < 1.0
+            and r.num_kept > 1
             and not self.isworse_fun(r.clf_mtrain, r.clf_mvalid),  # overfitting
             records,
         )
@@ -197,9 +198,11 @@ class AlphaSearch:
             return best.lo, best.hi
 
     def get_best_record(self):
-        # Out of the good enough solutions...
-        filt = self.quality_filter(self.records)
-        return max(filt, default=None, key=lambda r: r.frac_removed)
+        m = max(self.quality_filter(self.records), default=None, key=lambda r: r.frac_removed)
+        if m is None:
+            return None
+        allm = [r for r in self.quality_filter(self.records) if r.frac_removed == m.frac_removed]
+        return allm[-1]
 
 
 def _at_isregr(at):
@@ -214,7 +217,7 @@ def _at_predlab(at, x):
     if _at_isregr(at):
         return at.predict(x)
     elif at.num_leaf_values() == 1:
-        return (at.eval(x)[:, 0] > 0.0).astype(int)
+        return (at.eval(x)[:, 0] >= 0.0).astype(int)
     else:
         return at.eval(x).argmax(axis=1)
 
@@ -228,7 +231,7 @@ def _lasso_predlab(isregr, nlv, clf, x):
         pred = pred.reshape(nexamples, nlv, order="C")
         return pred.argmax(axis=1)
     else:
-        return pred > 0.0
+        return (pred >= 0.0).astype(int)
 
 
 
@@ -240,7 +243,7 @@ class Compress:
         metric,  # e.g. rmse(ytrue, ypred) (for clf: labels, not weights)
         isworse,  # isworse(value, reference)
                   # e.g. relative error is more than 0.01, abs. error >= 2%
-        alpha_search_round_nsteps=[10, 5, 3],
+        alpha_search_round_nsteps=[8, 4, 4],
         seed=988569,
         silent=False,
     ):
@@ -253,7 +256,9 @@ class Compress:
         self.seed = seed
         self.silent = silent
         self.no_convergence_warning = silent
-        self.tol = 1e-6
+        self.tol = 1e-5
+        self.linclf_type = "Lasso"
+        self.warm_start = True
 
         self.mtrain = self.metric(self.d.ytrain, _at_predlab(at, self.d.xtrain))
         self.mtest = self.metric(self.d.ytest, _at_predlab(at, self.d.xtest))
@@ -295,7 +300,7 @@ class Compress:
         last_record = self.records[-1]
         for i in range(max_rounds):
             if not self.silent:
-                print(f"\n\nROUND {i+1}")
+                print(f"\nROUND {i+1}")
 
             self._compress_round()
 
@@ -356,11 +361,24 @@ class Compress:
             self._update_clf(clf, alpha_record.alpha)
             clf = self._fit_coefficients(clf, xxtrain, xxvalid, alpha_record)
 
-            #at = self._prune_trees(alpha_record.intercept, alpha_record.coefs, mapping)
+            #at = self._prune_trees(self.at, clf.intercept_, clf.coef_, mapping)
             #mtr = self.metric(self.d.ytrain, _at_predlab(at, self.d.xtrain))
             #mva = self.metric(self.d.yvalid, _at_predlab(at, self.d.xvalid))
-            #print("check mtrain", np.round(mtr - alpha_record.clf_mtrain, 3))
-            #print("check mvalid", np.round(mva - alpha_record.clf_mvalid, 3))
+            #print("check mtrain", mtr, np.round(mtr - alpha_record.clf_mtrain, 3))
+            #eval_at = at.eval(self.d.xtrain)[:,0]
+            #eval_clf = clf.predict(xxtrain)
+            #diff = eval_at - eval_clf
+            #print(eval_at.round(5))
+            #print(eval_clf.round(5))
+            #print(diff.round(5), diff[0], np.std(diff))
+            #print("check mvalid", mva, np.round(mva - alpha_record.clf_mvalid, 3))
+            #eval_at = at.eval(self.d.xvalid)[:,0]
+            #eval_clf = clf.predict(xxvalid)
+            #diff = eval_at - eval_clf
+            #print(eval_at.round(5))
+            #print(eval_clf.round(5))
+            #print(diff.round(5), diff[0], np.std(diff))
+            #print()
 
             if not self.silent:
                 print_fit(alpha_record, alpha_search)
@@ -384,8 +402,10 @@ class Compress:
         mtrain_compr = self.metric(self.d.ytrain, _at_predlab(self.at, self.d.xtrain))
         mtest_compr = self.metric(self.d.ytest, _at_predlab(self.at, self.d.xtest))
         mvalid_compr = self.metric(self.d.yvalid, _at_predlab(self.at, self.d.xvalid))
-        print("best check mtrain", mtrain_compr, clf_mtrain, mtrain_compr-clf_mtrain)
-        print("best check mvalid", mvalid_compr, clf_mvalid, mtrain_compr-clf_mtrain)
+        if not self.silent:
+            print("best check mtrain", mtrain_compr, clf_mtrain, mtrain_compr-clf_mtrain,
+                  f"(alpha={best_alpha:.4f})")
+            print("best check mvalid", mvalid_compr, clf_mvalid, mvalid_compr-clf_mvalid)
         record = CompressRecord(level, self.at)
         record.mtrain = mtrain_compr
         record.mtest = mtest_compr
@@ -400,9 +420,15 @@ class Compress:
         return record
 
 
+    def is_single_target(self):
+        return self.nlv == 1
+
     def _get_matrix_mapping(self, at, level):
         mapping = []  # tree_index -> node_idx -> col_idex
-        num_cols = self.nlv  # if 1, one intercept column of all ones
+        if self.is_single_target():
+            num_cols = 0  # we use intercept
+        else:  # one 'intercept' per class/target
+            num_cols = self.nlv
 
         for t in at:
             mapping0 = {}  # leaf_id -> node_id at level along root-to-leaf path
@@ -415,6 +441,10 @@ class Compress:
                 while not t.is_root(n):
                     n = t.parent(n)
                     path.insert(0, n)
+
+                if len(path) == 1:  # a single leaf node tree is captured by intercept
+                    assert t.is_leaf(t.root()) and t.is_root(leaf_id)
+                    continue
 
                 # if this leaf is higher up than the level, just take the leaf
                 n_at_level = path[level] if len(path) > level else path[-1]
@@ -440,7 +470,7 @@ class Compress:
         if numba_success:
             return xx
 
-        raise RuntimeError("not impl")
+        raise RuntimeError("numba: no numba not impl")
 
         # AddTree transformation
         for t, (mapping0, mapping1) in zip(at, mapping):
@@ -469,9 +499,9 @@ class Compress:
 
         #t = time.time()
         M = len(at)
-        max_xnode = np.max(xnode, axis=1)
-        n_at_levels = np.full((M, max_xnode.max() + 1), -1, dtype=np.int32)
-        leafvals = np.zeros((M, max_xnode.max() + 1, self.nlv), dtype=np.float32)
+        max_leaf_id = max(max(m[0].keys(), default=0) for m in mapping)
+        n_at_levels = np.full((M, max_leaf_id + 1), -1, dtype=np.int32)
+        leafvals = np.zeros((M, max_leaf_id + 1, self.nlv), dtype=np.float32)
 
         for m, tree, (mapping0, mapping1) in zip(range(M), at, mapping):
             for leaf_id, n_at_level in mapping0.items():
@@ -482,9 +512,9 @@ class Compress:
         #tn_at_levels = time.time() - t
 
         #t = time.time()
-        max_n_at_levels = np.max(n_at_levels, axis=1)
-        col_idxs = np.full((M, max_n_at_levels.max() + 1), -1, dtype=np.int32)
-        node_types = np.zeros((M, max_n_at_levels.max() + 1), dtype=np.uint8)
+        max_n_at_level = max(max(m[1].keys(), default=0) for m in mapping)
+        col_idxs = np.full((M, max_n_at_level + 1), -1, dtype=np.int32)
+        node_types = np.zeros((M, max_n_at_level + 1), dtype=np.uint8)
         for m, tree, (mapping0, mapping1) in zip(range(M), at, mapping):
             for n_at_level, col_idx in mapping1.items():
                 col_idxs[m, n_at_level] = col_idx
@@ -502,10 +532,11 @@ class Compress:
             cache=False,
         )
         def __transformx(nlv, xx, xnode, leafvals, n_at_levels, col_idxs, node_types):
-            for i in range(xnode.shape[1]):  # iterate over examples
-                for target in range(nlv):
-                    ii = i*nlv + target
-                    xx[ii, target] = 1.0  # intercept for target
+            if nlv > 1:  # if not self.is_single_target():
+                for i in range(xnode.shape[1]):  # iterate over examples
+                    for target in range(nlv):
+                        ii = i*nlv + target
+                        xx[ii, target] = 1.0  # intercept for target
 
             for m in range(xnode.shape[0]):  # iterate over trees (could use prange)
                 for i in range(xnode.shape[1]):  # iterate over examples
@@ -520,6 +551,8 @@ class Compress:
                     for target in range(nlv):
                         ii = i*nlv + target
                         leaf_value = leafvals[m, leaf_id, target]
+                        if is_root and is_leaf:
+                            continue
                         if is_root or not is_leaf:
                             xx[ii, col_idx] = leaf_value
                         if is_leaf or not is_root:
@@ -537,35 +570,54 @@ class Compress:
     def _get_linclf(self):
         self.seed += 1
 
-        #return Lasso(
-        #    fit_intercept=False,
-        #    alpha=1.0,
-        #    random_state=self.seed,
-        #    max_iter=10_000,
-        #    tol=self.tol,
-        #    warm_start=False,
-        #    precompute=True,
-        #    selection="cyclic",
-        #)
-        return LogisticRegression(
-            fit_intercept=False,
-            penalty="l1",
-            C=1.0,
-            solver="liblinear",
-            max_iter=5_000,
-            tol=self.tol,
-            n_jobs=1,
-            random_state=self.seed,
-            warm_start=True,
-        )
+        if self.linclf_type == "Lasso":
+            return Lasso(
+                fit_intercept=self.is_single_target(),
+                alpha=1.0,
+                random_state=self.seed,
+                max_iter=10_000,
+                tol=self.tol,
+                precompute=True,
+                selection="random",
+                copy_X=False,
+                warm_start=self.warm_start,
+            )
+        #elif self.linclf_type == "ElasticNet":
+        #    return ElasticNet(
+        #        fit_intercept=False,
+        #        l1_ratio=0.9,
+        #        random_state=self.seed,
+        #        max_iter=10_000,
+        #        tol=self.tol,
+        #        warm_start=True,
+        #        precompute=True,
+        #        selection="cyclic",
+        #        copy_X=False,
+        #    )
+        elif self.linclf_type == "LogisticRegression":
+            return LogisticRegression(
+                fit_intercept=self.is_single_target(),
+                penalty="l1",
+                C=1.0,
+                solver="liblinear",
+                max_iter=5_000,
+                tol=self.tol,
+                n_jobs=1,
+                random_state=self.seed,
+                warm_start=self.warm_start,
+            )
+        else:
+            raise RuntimeError("linclf_type not Lasso or LogisticRegression")
 
     def _update_clf(self, clf, alpha):
         assert alpha > 0.0
-        if isinstance(clf, Lasso):
+        if isinstance(clf, Lasso) or isinstance(clf, ElasticNet):
             clf.alpha = 0.001 * alpha
         elif isinstance(clf, LogisticRegression):
             assert clf.penalty == "l1"
             clf.C = 1.0 / alpha
+        else:
+            raise RuntimeError("_update_clf ???")
 
     def _fit_coefficients(self, clf, xxtrain, xxvalid, alpha_record):
         import warnings
@@ -668,16 +720,24 @@ class Compress:
                 tpp = atpp.add_tree()
                 pruner.prune(tp.root(), tpp, tpp.root())
 
-        for target in range(self.nlv):
-            base_score = coefs[target]
-            atpp.set_base_score(target, base_score)
+        if self.is_single_target():
+            if isinstance(intercept, np.ndarray) and intercept.ndim > 1:
+                assert len(intercept) == 1
+                base_score = intercept[0]
+            else:
+                base_score = intercept
+            atpp.set_base_score(0, base_score)
+        else:
+            for target in range(self.nlv):
+                base_score = coefs[target]
+                atpp.set_base_score(target, base_score)
         return atpp
 
     def _copy_tree(self, t, tc, coefs, mapping1):
         self._copy_subtree(t, t.root(), tc, tc.root(), coefs, mapping1)
 
     def _copy_subtree(self, t, n, tc, nc, coefs, mapping1):
-        coefs[abs(coefs) < self.tol] = 0.0
+        #coefs[abs(coefs) < self.tol] = 0.0
 
         zero_bias = np.zeros(self.nlv)
         stack = [(n, nc, 1.0, zero_bias)]
@@ -696,8 +756,9 @@ class Compress:
                     coef = coefs[col_idx]
                     bias = coefs[col_idx+1:col_idx+self.nlv+1]
 
-                if coef <= self.tol:  # skip the branch, just predict bias
-                    #print(f"cutting off branch {n}, leaf value {bias.round(3)}")
+                if abs(coef) <= self.tol:  # skip the branch, just predict bias
+                    #if not t.is_leaf(n) and np.all(abs(bias)) > self.tol:
+                    #    print(f"cutting off branch {n} of size {t.tree_size(n)}, leaf value {bias.round(3)}")
                     for k in range(self.nlv):
                         tc.set_leaf_value(nc, k, bias[k])
                     continue
