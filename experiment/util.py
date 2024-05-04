@@ -1,47 +1,203 @@
-import glob
+import os
+import joblib
 import json
 import colorama
 import numpy as np
 import pandas as pd
 
+from datetime import datetime
+
 LBRACE = "{"
 RBRACE = "}"
 
+NFOLDS = 5
+DNAMES = [
+    "Img[bin]",
+    "Electricity",
+    #"CovtypeNumeric",
+    #"Covtype",
+    "MagicTelescope",
+    "BankMarketing",
+    "Bioresponse",
+    "MiniBooNE",
+    "DefaultCreditCardClients",
+    "EyeMovements",
+    "Diabetes130US",
+    "Jannis",
+    "Heloc",
+    "Credit",
+    "California",
+    "Albert",
+    "CompasTwoYears",
+    "RoadSafety",
+    #"AtlasHiggs",
+    "SantanderCustomerSatisfaction",
+    #"BreastCancer",
+    "Vehicle",
+    "Spambase",
+    "Phoneme",
+    "Nomao",
+    "Banknote",
+    "Adult",
+    "Ijcnn1",
+    "Webspam",
+    "Mnist[2v4]",
+    "FashionMnist[2v4]",
+    "Houses[bin]",
+    "CpuAct[bin]",
+    "MercedesBenzManufacturing[bin]",
+    "BikeSharingDemand[bin]",
+    "Yprop41[bin]",
+    "Abalone[bin]",
+    "DryBean[6vRest]",
+    "Volkert[2v7]",
+    "Seattlecrime6[bin]"
+    #"HiggsBig",
+    #"KddCup99",
+]
 
-def read_results(abserr, seed):
+def nowstr():
+    return datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+
+def read_jsons():
     jsons = []
-    for f in glob.glob("results/*"):
+    for f in os.listdir("results/"):
+        if not f.endswith(".txt"):
+            continue
+        f = os.path.join("results", f)
+        if not os.path.isfile(f):
+            continue
         with open(f) as fh:
             for line in fh.readlines():
                 if not line.startswith(LBRACE):
                     continue
 
                 j = json.loads(line)
-                if j["seed"] != seed:
-                    continue
-                if j["abserr"] != abserr:
-                    continue
-
+                j["file"] = f
                 jsons.append(j)
+    return jsons
 
+def get_or_insert(d, key, value_generator):
+    if key in d:
+        return d[key]
+    else:
+        d[key] = value_generator()
+        return d[key]
+
+def get_key(*args):
+    if len(args) == 1:
+        j = args[0]
+        model_type = j["model_type"]
+        linclf_type = j["linclf_type"]
+        seed = j["seed"]
+    else:
+        model_type, linclf_type, seed = args
+    return f"{model_type}-{linclf_type}-{seed}"
+
+def read_hyperparams(jsons=None):
+    if  jsons is None:
+        jsons = read_jsons()
+
+    params = {}
+    for j in jsons:
+        if j["task"] != "train":
+            continue
+        if j["paramset"] != "full":
+            continue
+
+        dname = j["dname"]
+        fold = j["fold"]
+        key = get_key(j)
+
+        forkey = get_or_insert(params, key, lambda: {})
+        fordname = get_or_insert(forkey, dname, lambda: {})
+        fordname[fold] = j["params"]
+
+    return params
+
+def write_hyperparams(hyperparams):
+    joblib.dump(hyperparams, "results/processed/hyperparams.joblib")
+
+
+def get_hyperparams():
+    return joblib.load("results/processed/hyperparams.joblib")
+
+
+def get_method_name(*args):
+    if len(args) == 1:
+        j = args[0]
+        cmd = j["cmd"]
+        model_type = j["model_type"]
+        paramset = j["paramset"] if cmd == "train" else ""
+        abserr = j["abserr"] if cmd == "compress" else 0.01
+    else:
+        cmd, model_type, paramset, abserr = args
+    suffix = f"compr{abserr*1000:04.0f}" if cmd == "compress" else paramset
+    return f'{model_type}_{suffix}'
+
+
+def read_results(jsons=None):
+    if  jsons is None:
+        jsons = read_jsons()
+
+    # Organize by:
+    # - dname
+    # - seed
+    # - abserr (0.005, 0.01, 0.02)
+    # - fold (0, 1, ..., 4)
+    # - model_type
+    #    + xgb         rf         dt           J48 (WEKA)       
+    #    + xgb.compr   rf.compr   dt.compr     J48.compr?   (per abserr)
+    #    + xgb.small   rf.small   dt.small     J48.small
+    #
+    # Big dict:
+    # [seed][model_type] = DataFrame
+    #   with multi-index
+    #     - dname x fold
+    #   with columns
+    #     - mtrain
+    #     - mvalid
+    #     - mtest
+    #     - nnodes
+    #     - nleaves
+    #     - nnz_leaves
+    #     - train / compress time
+    #
+    # compression specific columns
+    #     - abserr
+    #     - linclf_type
 
     organized = {}
-
     for j in jsons:
         dname = j["dname"]
-        model_type = j["model_type"]
         fold = j["fold"]
+        key = get_key(j)
+        method_name = get_method_name(j)
 
-        if dname not in organized:
-            organized[dname] = {}
-        fordata = organized.get(dname, {})
-        if model_type not in fordata:
-            fordata[model_type] = {}
-        formodel = fordata.get(model_type, {})
+        index = pd.MultiIndex.from_product(
+            [DNAMES, list(range(NFOLDS))], names=["dname", "fold"]
+        )
+        columns = ["mtrain", "mvalid", "mtest", "ntrees", "nnodes", "nnzleafs", "time"]
+        formethod = get_or_insert(organized, method_name, lambda: {})
+        df = get_or_insert(
+            formethod, key, lambda: pd.DataFrame(np.nan, index=index, columns=columns)
+        )
 
-        formodel[fold] = j
+        for k in columns:
+            try:
+                df.loc[(dname, fold), k] = j[k]
+            except KeyError:
+                print("KEY ERROR", k, method_name, "in", j["file"])
+                continue
 
     return organized
+
+def write_results(organized):
+    joblib.dump(organized, "results/processed/results.joblib")
+
+
+def get_results():
+    return joblib.load("results/processed/results.joblib")
 
 
 def print_metrics(lab, m0, m1, abserr):

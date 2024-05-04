@@ -1,6 +1,6 @@
 # ruff: noqa: F401
 
-from .util import Data
+from .util import Data, count_nnz_leafs
 from .compress import Compress, CompressRecord
 from .lasso_compress import (
     Compress as LassoCompress,

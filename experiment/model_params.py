@@ -1,13 +1,43 @@
+import numpy as np
 
 def get_params_xgb(d):
     params = {
         "random_state": d.seed + 9348,
         "n_jobs": 1,
+        "nthread": 1,
         "n_estimators": [50, 100, 200],
         "max_depth": [4, 6, 8],
-        "learning_rate": [0.5, 0.1],
-        "subsample": [0.8, 1.0],
-        #"colsample_bytree": [0.75, 1.0],
+        #"max_leaves": [2**4, 2**6, 2**8],
+        "learning_rate": [0.5, 0.25, 0.1],
+        "subsample": [0.5, 0.75, 1.0],
+        "colsample_bytree": [0.5, 0.75, 1.0],
+        "tree_method": "hist",
+    }
+
+    if d.is_multiclass():
+        params["objective"] = "multi:softmax"
+        params["num_class"] = d.num_classes
+        #params["multi_strategy"] = "multi_output_tree"
+
+    return params
+
+def get_params_xgb_small(d, ntrees, nnodes, nnzleafs):
+    n_estimators = np.unique([int(0.5 * ntrees), int(0.75 * ntrees), int(ntrees)])
+    n_estimators = list(map(int, n_estimators))
+    if 0 in n_estimators:
+        n_estimators.remove(0)
+    #max_leaves = range(2, int(np.ceil(np.log2(2 * nnodes / ntrees))))
+    max_depth = range(2, int(np.ceil(np.log2(4 * nnodes / ntrees))))
+    params = {
+        "random_state": d.seed + 9348,
+        "n_jobs": 1,
+        "nthread": 1,
+        "n_estimators": n_estimators,
+        "max_depth": list(max_depth),
+        #"max_leaves": list(map(lambda x: 2**x, max_depth)),
+        "learning_rate": [1.0, 0.5, 0.25, 0.1],
+        #"subsample": [0.5, 0.75, 1.0],
+        #"colsample_bytree": [0.5, 0.75, 1.0],
         "tree_method": "hist",
     }
 
@@ -60,6 +90,18 @@ def get_params(d, model_type):
         return get_params_lgb(d)
     elif model_type == "dt":
         return get_params_dt(d)
+    else:
+        raise RuntimeError(f"get_params: model type {model_type}")
+
+def get_params_small(d, model_type, ntrees, nnodes, nnzleafs):
+    if model_type == "rf":
+        raise RuntimeError("not impl")
+    elif model_type == "xgb":
+        return get_params_xgb_small(d, ntrees, nnodes, nnzleafs)
+    elif model_type == "lgb":
+        raise RuntimeError("not impl")
+    elif model_type == "dt":
+        raise RuntimeError("not impl")
     else:
         raise RuntimeError(f"get_params: model type {model_type}")
 

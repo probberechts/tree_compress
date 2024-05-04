@@ -10,6 +10,7 @@ from sklearn.preprocessing import OneHotEncoder
 
 from .util import count_nnz_leafs, print_metrics, print_fit
 
+
 @dataclass(init=False)
 class CompressRecord:
     level: int
@@ -244,6 +245,7 @@ class Compress:
         isworse,  # isworse(value, reference)
                   # e.g. relative error is more than 0.01, abs. error >= 2%
         alpha_search_round_nsteps=[8, 4, 4],
+        linclf_type="Lasso",
         seed=988569,
         silent=False,
     ):
@@ -257,7 +259,7 @@ class Compress:
         self.silent = silent
         self.no_convergence_warning = silent
         self.tol = 1e-5
-        self.linclf_type = "Lasso"
+        self.linclf_type = linclf_type
         self.warm_start = True
 
         self.mtrain = self.metric(self.d.ytrain, _at_predlab(at, self.d.xtrain))
@@ -326,7 +328,7 @@ class Compress:
 
             self.records.append(r)
 
-            max_depth = self._get_max_depth()
+            max_depth = self.at.max_depth()
             if level >= max_depth:
                 if not self.silent:
                     print(f"DONE, depth of tree reached {level}, {max_depth}")
@@ -663,11 +665,8 @@ class Compress:
 
         return clf
 
-    def _get_max_depth(self):
-        return max(max(tree.depth(i) for i in tree.get_leaf_ids()) for tree in self.at)
-
     def _per_tree_opt(self, num_trees):
-        level = self._get_max_depth() + 1
+        level = self.at.max_depth() + 1
 
         print("START PRE FIT")
         pre_tuned_at = veritas.AddTree(self.nlv, veritas.AddTreeType.CLF_MEAN)

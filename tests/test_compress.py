@@ -7,6 +7,7 @@ import veritas
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.metrics import accuracy_score
 
 BPATH = os.path.dirname(__file__)
 
@@ -159,13 +160,14 @@ class TestCompress(unittest.TestCase):
         X = X.astype(veritas.FloatT)
 
         xtrain, xtest, ytrain, ytest = train_test_split(
-            X, y, test_size=0.40, random_state=42
+            X, y, test_size=0.40, random_state=37
         )
-        xvalid, xtest, yvalid, ytest = train_test_split(xtest, ytest, test_size=0.5)
+        xvalid, xtest, yvalid, ytest = train_test_split(xtest, ytest, test_size=0.5, random_state=73)
 
         clf = clazz(
+            random_state=37,
             n_estimators=20,
-            max_depth=4,
+            max_depth=5,
             **kwargs
         )
         clf.fit(xtrain, ytrain)
@@ -177,10 +179,17 @@ class TestCompress(unittest.TestCase):
         veritas.test_conversion(at, X[:10,:], clf.predict_proba(X[:10,:]))
         yhat2 = np.argmax(at.predict(X), axis=1)
 
+        abserr = 0.01
         data = tree_compress.Data(xtrain, ytrain, xtest, ytest, xvalid, yvalid)
-        compressor = tree_compress.Compress(data, at, silent=False)
-        relerr = 0.01
-        at_pruned = compressor.compress(relerr=relerr, max_rounds=1)
+        compressor = tree_compress.LassoCompress(
+            data,
+            at,
+            metric=accuracy_score,
+            isworse=lambda v, ref: ref-v > abserr,
+            silent=False
+        )
+        compressor.no_convergence_warning = True
+        at_pruned = compressor.compress(max_rounds=2)
         yhat3 = np.argmax(at_pruned.predict(X), axis=1)
         before = compressor.records[0]
         after = compressor.records[-1]
@@ -191,26 +200,34 @@ class TestCompress(unittest.TestCase):
         #self.assertGreater(before.nnz_leafs, after.nnz_leafs)
         #self.assertGreaterEqual((1+relerr)*after.mvalid, before.mvalid)
 
+        for t in at_pruned:
+            print(t)
+
         try:
             import matplotlib.pyplot as plt
 
-            fig, ax = plt.subplots(2, 2)
-            ax[0, 0].imshow(y.reshape((100, 100)))
+            fig, ax = plt.subplots(2, 3)
+            ax[0, 0].imshow(y.reshape((100, 100)), interpolation="none")
             ax[0, 0].set_title("ground truth")
-            ax[0, 1].imshow(yhat1.reshape((100, 100)))
+            ax[0, 1].imshow(yhat1.reshape((100, 100)), interpolation="none")
             ax[0, 1].set_title("clf pred")
-            ax[1, 0].imshow(yhat2.reshape((100, 100)))
-            ax[1, 0].set_title("at")
-            ax[1, 1].imshow(yhat3.reshape((100, 100)))
-            #ax[1, 1].imshow(at.predict(X)[:,2].reshape((100, 100)))
-            ax[1, 1].set_title("pruned")
+            ax[1, 0].imshow(yhat2.reshape((100, 100)), interpolation="none")
+            ax[1, 0].set_title("at (check)")
+            ax[1, 1].imshow(yhat3.reshape((100, 100)), interpolation="none")
+            ax[1, 1].set_title("compressed")
+            ax[0, 2].imshow((yhat2 == y).reshape((100, 100)), cmap="Reds", interpolation="none")
+            ax[0, 2].set_title("errors clf")
+            ax[1, 2].imshow((yhat3 == y).reshape((100, 100)), cmap="Reds", interpolation="none")
+            ax[1, 2].set_title("errors clf")
 
-            fig, ax = plt.subplots(3, 2)
+            fig, ax = plt.subplots(3, 3)
             for k in range(3):
-                ax[k, 0].set_title(f"uncompr. target {k}")
-                ax[k, 0].imshow(at.eval(X)[:,k].reshape((100, 100)))
-                ax[k, 1].set_title(f"compr. target {k}")
-                ax[k, 1].imshow(at_pruned.eval(X)[:,k].reshape((100, 100)))
+                ax[k, 0].set_title(f"ground target {k}")
+                ax[k, 0].imshow((y==k).reshape((100, 100)), interpolation="none")
+                ax[k, 1].set_title(f"uncompr. target {k}")
+                ax[k, 1].imshow(at.eval(X)[:,k].reshape((100, 100)), vmin=-1, vmax=1, interpolation="none")
+                ax[k, 2].set_title(f"compr. target {k}")
+                ax[k, 2].imshow(at_pruned.eval(X)[:,k].reshape((100, 100)), vmin=-1, vmax=1, interpolation="none")
 
             plt.tight_layout()
             plt.show()
