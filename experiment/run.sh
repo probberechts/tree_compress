@@ -29,7 +29,7 @@ echo "###################################################"  | tee --append $OUTN
 if [ "${HOSTNAME}" = "laurens-hp" ]; then
     NTHREADS=4
 else
-    NTHREADS=12
+    NTHREADS=30  # assuming himec03/04
 fi
 
 cat $CMD_LIST |

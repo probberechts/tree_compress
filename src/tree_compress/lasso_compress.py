@@ -23,7 +23,7 @@ class CompressRecord:
     ntrees: int
     nnodes: int
     nleafs: int
-    nnz_leafs: int
+    nnzleafs: int
 
     mtrain: float
     mtest: float
@@ -44,7 +44,7 @@ class CompressRecord:
         self.ntrees = len(at)
         self.nnodes = at.num_nodes()
         self.nleafs = at.num_leafs()
-        self.nnz_leafs = count_nnz_leafs(at)
+        self.nnzleafs = count_nnz_leafs(at)
 
         self.mtrain = 0.0
         self.mtest = 0.0

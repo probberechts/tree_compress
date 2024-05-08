@@ -7,5 +7,6 @@ experiment/tex
 experiment/results
 experiment/*.txt
 experiment/get_results.sh
+experiment/lists
 sync.sh
 examples/tex

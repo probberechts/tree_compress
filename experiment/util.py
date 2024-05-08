@@ -2,10 +2,15 @@ import os
 import joblib
 import json
 import colorama
+import prada
+import veritas
 import numpy as np
 import pandas as pd
 
 from datetime import datetime
+from dataclasses import dataclass
+
+SEED = 5823
 
 LBRACE = "{"
 RBRACE = "}"
@@ -56,8 +61,114 @@ DNAMES = [
     #"KddCup99",
 ]
 
+def get_dataset(dname, seed, linclf_type, fold, silent):
+    d = prada.get_dataset(dname, seed=seed, silent=silent)
+    d.load_dataset()
+    d.robust_normalize()
+    #d.transform_target()
+    d.scale_target()
+    d.astype(veritas.FloatT)
+
+    if d.is_regression():
+        raise RuntimeError("not supported")
+
+    if linclf_type == "Lasso":
+        d = d.as_regression_problem()
+
+    d.use_balanced_accuracy()
+    dtrain, dtest = d.train_and_test_fold(fold, nfolds=NFOLDS)
+    dtrain, dvalid = dtrain.split(0, nfolds=NFOLDS-1)
+
+    return d, dtrain, dvalid, dtest
+
+@dataclass
+class HyperParamResult:
+    at: object
+    train_time: float
+    params: dict
+
+    mtrain: float
+    mvalid: float
+    mtest: float
+
+    nleafs: int
+    nnzleafs: int
+
+def pareto_front(models, mkey="mvalid", skey="nnzleafs"):
+    """
+    1. Let 𝑖:=1
+    2. Add 𝐴𝑖 to the Pareto frontier.
+    3. Find smallest 𝑗>𝑖 such that value(𝐴𝑗)>value(𝐴𝑖).
+    4. If no such 𝑗 exists, stop. Otherwise let 𝑖:=𝑗 and repeat from step 2.
+
+    https://math.stackexchange.com/a/101141
+    """
+    models.sort(key=lambda m: m[mkey], reverse=True)
+    models.sort(key=lambda m: m[skey]) # stable sort
+    n = len(models)
+    onfront = np.zeros(n, dtype=bool)
+
+    i = 0
+    while i < n:
+        onfront[i] = True
+        j = n
+        for k in range(i+1, n):
+            if models[k][mkey] > models[i][mkey]:
+                j = k
+                break
+        if j < n:
+            i = j
+        else:
+            break
+
+    return onfront
+
+def plot_pareto_front(ax, models):
+    from scipy.spatial import ConvexHull
+
+    onfront = pareto_front(models)
+    models_onfront = [m for b, m in zip(onfront, models) if b]
+
+    # Add a point to the convex hull points to force it to the bottom right corner, then remove it again
+    hullpoints = np.array([[m["nnzleafs"], m["mtest"]] for m in models_onfront])
+    hullpoints = np.vstack([hullpoints, [hullpoints[:,0].max(), hullpoints[:,1].min()]])
+    if hullpoints.shape[0] > 2:
+        hullv = sorted(ConvexHull(hullpoints).vertices)
+        hullv.remove(onfront.sum())
+    else:
+        hullv = None
+
+    xs = np.array([m["nnzleafs"] for m in models])
+    ys = np.array([m["mtest"] for m in models])
+    x0, y0 = max(xs), min(ys)
+
+    ax.scatter(xs, ys, c=onfront.astype(float), s=10*(onfront.astype(float)+1))
+    ax.invert_yaxis()
+    ax.set_xlabel("model size")
+    ax.set_ylabel("error test set")
+    #yticks = ax.get_yticks()
+    #ax.set_yticks(yticks)
+    #ax.set_yticklabels([f"{1.0-x:.3f}" for x in yticks])
+
+    if hullv:
+        ax.plot(xs[onfront][hullv], ys[onfront][hullv], c="gray", ls=":", lw=1)
+        ax.plot([xs[onfront][hullv[0]]]*2, [y0, ys[onfront][hullv[0]]], c="gray", ls=":", lw=1)
+        ax.plot([x0, xs[onfront][hullv[-1]]], [ys[onfront][hullv[-1]]]*2, c="gray", ls=":", lw=1)
+
 def nowstr():
     return datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+
+def read_json_printfile(fname):
+    jsons = []
+    with open(fname) as fh:
+        for line in fh.readlines():
+            if not line.startswith(LBRACE):
+                continue
+
+            j = json.loads(line)
+            j["file"] = fname
+            jsons.append(j)
+    return jsons
 
 def read_jsons():
     jsons = []
@@ -67,14 +178,7 @@ def read_jsons():
         f = os.path.join("results", f)
         if not os.path.isfile(f):
             continue
-        with open(f) as fh:
-            for line in fh.readlines():
-                if not line.startswith(LBRACE):
-                    continue
-
-                j = json.loads(line)
-                j["file"] = f
-                jsons.append(j)
+        jsons += read_json_printfile(f)
     return jsons
 
 def get_or_insert(d, key, value_generator):
@@ -94,17 +198,11 @@ def get_key(*args):
         model_type, linclf_type, seed = args
     return f"{model_type}-{linclf_type}-{seed}"
 
-def read_hyperparams(jsons=None):
-    if  jsons is None:
-        jsons = read_jsons()
 
+def read_hyperparams(fname):
+    jsons = read_json_printfile(fname)
     params = {}
     for j in jsons:
-        if j["task"] != "train":
-            continue
-        if j["paramset"] != "full":
-            continue
-
         dname = j["dname"]
         fold = j["fold"]
         key = get_key(j)
@@ -115,12 +213,13 @@ def read_hyperparams(jsons=None):
 
     return params
 
-def write_hyperparams(hyperparams):
-    joblib.dump(hyperparams, "results/processed/hyperparams.joblib")
+
+def write_train_results(hyperparams):
+    joblib.dump(hyperparams, "processed_results/train.joblib", compress=9)
 
 
-def get_hyperparams():
-    return joblib.load("results/processed/hyperparams.joblib")
+def load_train_results():
+    return joblib.load("processed_results/train.joblib")
 
 
 def get_method_name(*args):
@@ -196,7 +295,7 @@ def write_results(organized):
     joblib.dump(organized, "results/processed/results.joblib")
 
 
-def get_results():
+def load_results():
     return joblib.load("results/processed/results.joblib")
 
 

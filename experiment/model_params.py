@@ -5,12 +5,12 @@ def get_params_xgb(d):
         "random_state": d.seed + 9348,
         "n_jobs": 1,
         "nthread": 1,
-        "n_estimators": [50, 100, 200],
+        "n_estimators": [10, 25, 50, 100, 150, 200],
         "max_depth": [4, 6, 8],
         #"max_leaves": [2**4, 2**6, 2**8],
         "learning_rate": [0.5, 0.25, 0.1],
-        "subsample": [0.5, 0.75, 1.0],
-        "colsample_bytree": [0.5, 0.75, 1.0],
+        #"subsample": [0.5, 0.75, 1.0],
+        #"colsample_bytree": [0.5, 0.75, 1.0],
         "tree_method": "hist",
     }
 
