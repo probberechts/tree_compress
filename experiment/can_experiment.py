@@ -21,7 +21,7 @@ def cli():
 @click.option("--fold", default=0)
 @click.option("--seed", default=util.SEED)
 @click.option("--silent", is_flag=True, default=False)
-def compress_cmd(dname, model_type, linclf_type, fold, seed, silent):
+def leaf_refine_cmd(dname, model_type, linclf_type, fold, seed, silent):
     d, dtrain, dvalid, dtest = util.get_dataset(dname, seed, linclf_type, fold, silent)
     model_class = d.get_model_class(model_type)
 
@@ -56,7 +56,7 @@ def compress_cmd(dname, model_type, linclf_type, fold, seed, silent):
         at_refined = at_orig.copy()
         refine_time = time.time() - refine_time
 
-        compress_result = {
+        refine_result = {
             "params": params,
 
             # Performance of the compressed model
@@ -71,7 +71,7 @@ def compress_cmd(dname, model_type, linclf_type, fold, seed, silent):
             "max_depth": int(at_refined.max_depth()),
         }
 
-        refine_results.append(compress_result)
+        refine_results.append(refine_result)
 
     results = {
         # Experimental settings
