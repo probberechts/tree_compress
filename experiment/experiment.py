@@ -171,73 +171,117 @@ def plot_compress_cmd(dname, model_type, linclf_type, seed):
         cos.append(co)
 
         #ax.scatter(tr[:, 0], tr[:, 1], marker=".", c="black", s=5, alpha=0.1)
-        ax.scatter(tr[:, 0].mean(), tr[:, 1].mean(), marker=".", c="lightgray", s=10)
-        ax.scatter(co[:, 0].mean(), co[:, 1].mean(), marker="d", c="lightgray", s=10)
-        ax.plot([tr[:, 0].mean(), co[:, 0].mean()],
-                [tr[:, 1].mean(), co[:, 1].mean()], ls="-", color="lightgray", lw=0.5)
+        #ax.scatter(tr[:, 0].mean(), tr[:, 1].mean(), marker=".", c="lightgray", s=10)
+        #ax.scatter(co[:, 0].mean(), co[:, 1].mean(), marker="d", c="lightgray", s=10)
+        #ax.plot([tr[:, 0].mean(), co[:, 0].mean()],
+        #        [tr[:, 1].mean(), co[:, 1].mean()], ls="-", color="lightgray", lw=0.5)
 
-    tr_mn = np.array([np.mean(tr, axis=0) for tr in trs])
-    tr_std = np.array([np.std(tr, axis=0) for tr in trs])
-    co_mn = np.array([np.mean(co, axis=0) for co in cos])
-    co_std = np.array([np.std(co, axis=0) for co in cos])
+    #tr_mn = np.array([np.mean(tr, axis=0) for tr in trs])
+    #tr_std = np.array([np.std(tr, axis=0) for tr in trs])
+    #co_mn = np.array([np.mean(co, axis=0) for co in cos])
+    #co_std = np.array([np.std(co, axis=0) for co in cos])
 
-    # Front without compression
-    onfront = util.pareto_front_xy(tr_mn[:, 0], tr_mn[:, 1])
-    #chull = util.convex_hull_front_xy(tr_mn[onfront])
-    #chull = chull[chull[:, 0].argsort(), :]
-    pareto = tr_mn[onfront, :]
-    pareto = np.hstack(
-        (
-            pareto,
-            pareto[:, 1:2] - np.convolve(tr_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
-            pareto[:, 1:2] + np.convolve(tr_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
-            #pareto[:, 1:2] - tr_std[onfront, 1:2],
-            #pareto[:, 1:2] + tr_std[onfront, 1:2]
+    num_not_dominated_over_folds = np.zeros(2, dtype=int)
+
+    for fold in range(util.NFOLDS):
+        tr_mn = np.array([tr[fold, :] for tr in trs])
+        co_mn = np.array([co[fold, :] for co in cos])
+
+        # Front without compression
+        onfront = util.pareto_front_xy(tr_mn[:, 0], tr_mn[:, 1])
+        #chull = util.convex_hull_front_xy(tr_mn[onfront])
+        #chull = chull[chull[:, 0].argsort(), :]
+        pareto = tr_mn[onfront, :]
+        pareto = np.hstack(
+            (
+                pareto,
+                #pareto[:, 1:2] - np.convolve(tr_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
+                #pareto[:, 1:2] + np.convolve(tr_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
+                #pareto[:, 1:2] - tr_std[onfront, 1:2],
+                #pareto[:, 1:2] + tr_std[onfront, 1:2]
+            )
         )
-    )
-    pareto = pareto[pareto[:, 0].argsort(), :]
+        pareto = pareto[pareto[:, 0].argsort(), :]
 
-    ax.plot(pareto[:,0], pareto[:, 1], "-o", color="red", ms="3")
-    ax.plot(pareto[:,0], pareto[:, 2], color="red", lw=1, ls=":")
-    ax.plot(pareto[:,0], pareto[:, 3], color="red", lw=1, ls=":")
-    ax.fill_between(pareto[:,0], pareto[:, 2], pareto[:, 3], fc="red", alpha=0.1)
+        lxgb, = ax.plot(pareto[:,0], pareto[:, 1], "-o", color="navy", ms=3)
+        #ax.plot(pareto[:,0], pareto[:, 2], color="navy", lw=1, ls=":")
+        #ax.plot(pareto[:,0], pareto[:, 3], color="navy", lw=1, ls=":")
+        #ax.fill_between(pareto[:,0], pareto[:, 2], pareto[:, 3], fc="navy", alpha=0.1)
 
+        # HOW MANY compressed are not dominated by xgb front?
+        compr_not_dominated = np.zeros(co_mn.shape[0], dtype=bool)
+        for i in range(co_mn.shape[0]):   #   smaller              OR    better performance
+            front_smaller = pareto[:, 0] < co_mn[i, 0]
+            front_accurater = pareto[:, 1] > co_mn[i, 1]
+            is_dominated = any(front_smaller & front_accurater)
+            is_not_dominated = not is_dominated
+            is_not_dominated |= all(co_mn[i, 0] <= pareto[:, 0])
+            is_not_dominated |= all(co_mn[i, 1] >= pareto[:, 1])
+            compr_not_dominated[i] = is_not_dominated
+        num_not_dominated_over_folds += [sum(compr_not_dominated), len(compr_not_dominated)]
 
-    # Front for compressed
-    onfront = util.pareto_front_xy(co_mn[:, 0], co_mn[:, 1])
-    pareto = co_mn[onfront, :]
-    pareto = np.hstack(
-        (
-            pareto,
-            pareto[:, 1:2] - np.convolve(co_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
-            pareto[:, 1:2] + np.convolve(co_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
-            #pareto[:, 1:2] - co_std[onfront, 1:2],
-            #pareto[:, 1:2] + co_std[onfront, 1:2]
+        print(f"GOODNESS SCORE {np.mean(compr_not_dominated)*100:.1f}%")
+
+        ax.scatter(
+            tr_mn[:, 0],
+            tr_mn[:, 1],
+            marker=".",
+            c=["lightgray" if b else "red" for b in compr_not_dominated],
+            s=10,
         )
-    )
-    pareto = pareto[pareto[:, 0].argsort(), :]
+        ax.scatter(
+            co_mn[:, 0],
+            co_mn[:, 1],
+            marker="d",
+            c=["lightgray" if b else "red" for b in compr_not_dominated],
+            s=10,
+        )
+        for i in range(co_mn.shape[0]):
+            ax.plot(
+                np.hstack((tr_mn[i, 0:1], co_mn[i, 0:1])),
+                np.hstack((tr_mn[i, 1:2], co_mn[i, 1:2])),
+                c="lightgray" if compr_not_dominated[i] else "red",
+                lw=0.5, alpha=0.5,
+            )
 
-    ax.plot(pareto[:,0], pareto[:, 1], "-o", color="green", ms="3")
-    ax.plot(pareto[:,0], pareto[:, 2], color="green", lw=1, ls=":")
-    ax.plot(pareto[:,0], pareto[:, 3], color="green", lw=1, ls=":")
-    ax.fill_between(pareto[:,0], pareto[:, 2], pareto[:, 3], fc="green", alpha=0.1)
+        # Front for compressed
+        onfront = util.pareto_front_xy(co_mn[:, 0], co_mn[:, 1])
+        pareto = co_mn[onfront, :]
+        pareto = np.hstack(
+            (
+                pareto,
+                #pareto[:, 1:2] - np.convolve(co_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
+                #pareto[:, 1:2] + np.convolve(co_std[onfront, 1], np.ones(3)/3, "same").reshape(-1, 1),
+                #pareto[:, 1:2] - co_std[onfront, 1:2],
+                #pareto[:, 1:2] + co_std[onfront, 1:2]
+            )
+        )
+        pareto = pareto[pareto[:, 0].argsort(), :]
 
-    # Front with compression
-    all_mn = np.vstack([tr_mn, co_mn])
-    is_compr = np.ones(all_mn.shape[0], dtype=bool)
-    is_compr[:tr_mn.shape[0]] = False
-    onfront = util.pareto_front_xy(all_mn[:, 0], all_mn[:, 1])
-    pareto = all_mn[onfront, :]
-    pareto = pareto[pareto[:, 0].argsort(), :]
+        lcompr, = ax.plot(pareto[:,0], pareto[:, 1], "-d", color="green", ms=3)
+        #ax.plot(pareto[:,0], pareto[:, 2], color="green", lw=1, ls=":")
+        #ax.plot(pareto[:,0], pareto[:, 3], color="green", lw=1, ls=":")
+        #ax.fill_between(pareto[:,0], pareto[:, 2], pareto[:, 3], fc="green", alpha=0.1)
 
-    ax.plot(pareto[:,0], pareto[:, 1], "--", color="orange", ms="3")
+        ## Front with compression
+        #all_mn = np.vstack([tr_mn, co_mn])
+        #is_compr = np.ones(all_mn.shape[0], dtype=bool)
+        #is_compr[:tr_mn.shape[0]] = False
+        #onfront = util.pareto_front_xy(all_mn[:, 0], all_mn[:, 1])
+        #pareto = all_mn[onfront, :]
+        #pareto = pareto[pareto[:, 0].argsort(), :]
+
+        #lboth, = ax.plot(pareto[:,0], pareto[:, 1], "--", color="orange", ms="3")
 
 
-
+    goodness_score = num_not_dominated_over_folds[0] / num_not_dominated_over_folds[1]
     ax.set_xlabel("model size")
     ax.set_ylabel("bal. acc. test set")
     ax.set_xscale("log")
-    ax.set_title(f"{dname}, {key}")
+    ax.set_title(f"{dname}, SCORE {goodness_score*100:.1f}%")
+
+    #ax.legend([lxgb, lcompr, lboth], ["Pareto XGB", "Pareto compressed", "Pareto both"])
+    ax.legend([lxgb, lcompr], ["Pareto XGB", "Pareto compressed"])
 
     plt.show()
 

@@ -34,7 +34,7 @@ DNAMES = [
     "California",
     "Albert",
     "CompasTwoYears",
-    #"RoadSafety", takes long
+    "RoadSafety",
     #"AtlasHiggs",
     "SantanderCustomerSatisfaction",
     #"BreastCancer",
@@ -47,10 +47,10 @@ DNAMES = [
     "Ijcnn1",
     "Webspam",
     "Mnist[2v4]",
-    #"FashionMnist[2v4]", takes long
-    #"Houses[bin]", takes long
+    "FashionMnist[2v4]",
+    "Houses[bin]",
     "CpuAct[bin]",
-    #"MercedesBenzManufacturing[bin]", too simple
+    "MercedesBenzManufacturing[bin]",
     "BikeSharingDemand[bin]",
     "Yprop41[bin]",
     "Abalone[bin]",
