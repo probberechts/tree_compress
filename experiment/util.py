@@ -34,7 +34,7 @@ DNAMES = [
     "California",
     "Albert",
     "CompasTwoYears",
-    "RoadSafety",
+    #"RoadSafety", takes long
     #"AtlasHiggs",
     "SantanderCustomerSatisfaction",
     #"BreastCancer",
@@ -47,10 +47,10 @@ DNAMES = [
     "Ijcnn1",
     "Webspam",
     "Mnist[2v4]",
-    "FashionMnist[2v4]",
-    "Houses[bin]",
+    #"FashionMnist[2v4]", takes long
+    #"Houses[bin]", takes long
     "CpuAct[bin]",
-    "MercedesBenzManufacturing[bin]",
+    #"MercedesBenzManufacturing[bin]", too simple
     "BikeSharingDemand[bin]",
     "Yprop41[bin]",
     "Abalone[bin]",
@@ -123,13 +123,59 @@ def pareto_front(models, mkey="mvalid", skey="nnzleafs"):
 
     return onfront
 
-def plot_pareto_front(ax, models):
+def pareto_front_xy(x, y):
+    yperm = np.argsort(y)[::-1]
+    x = x[yperm]
+    y = y[yperm]
+    xperm = np.argsort(x, kind="stable")
+    x = x[xperm]
+    y = y[xperm]
+    perm = yperm[xperm]
+
+    n = len(x)
+    onfront = np.zeros(n, dtype=bool)
+
+    i = 0
+    while i < n:
+        onfront[i] = True
+        j = n
+        for k in range(i+1, n):
+            if y[k] > y[i]:
+                j = k
+                break
+        if j < n:
+            i = j
+        else:
+            break
+
+    onfront_inv_perm = np.zeros_like(onfront)
+    onfront_inv_perm[perm] = onfront
+    return onfront_inv_perm
+
+
+def convex_hull_front_xy(xy):
+    from scipy.spatial import ConvexHull
+    points = np.vstack([
+        xy,
+        [xy[:,0].max(), xy[:,1].max()],
+        [0.0, 0.0]
+    ])
+    ch = ConvexHull(points)
+    hullv = [x for x in ch.vertices if x < xy.shape[0]]
+
+    return xy[hullv, :]
+
+
+
+
+def plot_pareto_front(ax, models, compr_models=None):
     from scipy.spatial import ConvexHull
 
-    onfront = pareto_front(models)
+    onfront = pareto_front(models, mkey="mtest", skey="nnzleafs")
     models_onfront = [m for b, m in zip(onfront, models) if b]
 
-    # Add a point to the convex hull points to force it to the bottom right corner, then remove it again
+    # Add a point to the convex hull points to force it to the bottom right corner,
+    # then remove it again
     hullpoints = np.array([[m["nnzleafs"], m["mtest"]] for m in models_onfront])
     hullpoints = np.vstack([hullpoints, [hullpoints[:,0].max(), hullpoints[:,1].min()]])
     if hullpoints.shape[0] > 2:
@@ -143,9 +189,10 @@ def plot_pareto_front(ax, models):
     x0, y0 = max(xs), min(ys)
 
     ax.scatter(xs, ys, c=onfront.astype(float), s=10*(onfront.astype(float)+1))
-    ax.invert_yaxis()
+    #ax.invert_yaxis()
     ax.set_xlabel("model size")
-    ax.set_ylabel("error test set")
+    ax.set_ylabel("bal. acc. test set")
+    ax.set_xscale("log")
     #yticks = ax.get_yticks()
     #ax.set_yticks(yticks)
     #ax.set_yticklabels([f"{1.0-x:.3f}" for x in yticks])
@@ -154,6 +201,43 @@ def plot_pareto_front(ax, models):
         ax.plot(xs[onfront][hullv], ys[onfront][hullv], c="gray", ls=":", lw=1)
         ax.plot([xs[onfront][hullv[0]]]*2, [y0, ys[onfront][hullv[0]]], c="gray", ls=":", lw=1)
         ax.plot([x0, xs[onfront][hullv[-1]]], [ys[onfront][hullv[-1]]]*2, c="gray", ls=":", lw=1)
+
+    if compr_models is not None:
+        pareto_models = {
+            params_hash(m["params"]): m for m in models if m["on_pareto_front"]
+        }
+
+        for m in compr_models:
+            h = params_hash(m["params"])
+            tm = pareto_models[h]
+
+            xs = [tm["nnzleafs"], m["nnzleafs"]]
+            ys = [tm["mtest"], m["mtest"]]
+            print("--->", xs, np.round(ys, 3))
+            ax.plot(xs, ys, color="red", lw=1)
+            ax.plot([xs[1]], [ys[1]], "x", color="red")
+
+
+def params_hash(params):
+    import struct
+    import hashlib
+
+    keys = sorted(params.keys())
+    h = hashlib.sha256()
+
+    for k in keys:
+        h.update(k.encode("ascii"))
+        value = params[k]
+        if isinstance(value, float):
+            h.update(struct.pack("f", value))
+        elif isinstance(value, int):
+            h.update(struct.pack("i", value))
+        elif isinstance(value, str):
+            h.update(value.encode("ascii"))
+        else:
+            print("don't know how to hash")
+
+    return h.hexdigest()
 
 def nowstr():
     return datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
@@ -291,12 +375,12 @@ def read_results(jsons=None):
 
     return organized
 
-def write_results(organized):
-    joblib.dump(organized, "results/processed/results.joblib")
+def write_compress_results(organized):
+    joblib.dump(organized, "processed_results/compress.joblib")
 
 
-def load_results():
-    return joblib.load("results/processed/results.joblib")
+def load_compress_results():
+    return joblib.load("processed_results/compress.joblib")
 
 
 def print_metrics(lab, m0, m1, abserr):

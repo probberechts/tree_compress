@@ -37,12 +37,15 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
     # classification.
 
     key = util.get_key(model_type, linclf_type, seed)
-    train_results = util.load_train_results()[key][dname][fold]
-    train_results = [p for p in train_results if p["on_pareto_front"]]
+    train_results = util.load_train_results()[key][dname]
 
     refine_results = []
-    for tres in train_results:
+    for params_hash, folds in train_results.items():
+        tres = folds[fold]
         params = tres["params"]
+
+        if not tres["on_any_pareto_front"]:
+            continue
 
         # Retrain the model
         clf, train_time = dtrain.train(model_class, params)
