@@ -5,6 +5,7 @@ __pycache__
 experiment/cluster
 experiment/tex
 experiment/results
+experiment/processed_results
 experiment/*.txt
 experiment/get_results.sh
 experiment/lists
