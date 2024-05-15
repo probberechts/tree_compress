@@ -169,7 +169,7 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
 
     results = {
         # Experimental settings
-        "cmd": "train",
+        "cmd": f"lr_{penalty}",
         "date_time": util.nowstr(),
         "hostname": os.uname()[1],
         "dname": dname,

@@ -25,7 +25,7 @@ def cli():
 @click.option("--seed", default=util.SEED)
 def print_configs(cmd, linclf_type, abserr, seed):
     if cmd == "train":
-        for dname in util.DNAMES:
+        for dname in util.DNAMES_SUBSUB:
             d = prada.get_dataset(dname, seed=seed, silent=True)
 
             for model_type in ["xgb"]:#, "dt"]:
@@ -42,7 +42,7 @@ def print_configs(cmd, linclf_type, abserr, seed):
                           "--seed", seed,
                           "--silent")
     elif cmd == "compress":
-        for dname in util.DNAMES:
+        for dname in util.DNAMES_SUBSUB:
             d = prada.get_dataset(dname, seed=seed, silent=True)
 
             for model_type in ["xgb"]:#, "dt"]:
@@ -51,7 +51,7 @@ def print_configs(cmd, linclf_type, abserr, seed):
                 grid = d.paramgrid(fold=folds)
 
                 for cli_param in grid:
-                    print("python experiment.py compress",
+                    print("python experiment.py verification",
                           dname,
                           "--model_type", model_type,
                           "--linclf_type", linclf_type,
@@ -65,7 +65,8 @@ def print_configs(cmd, linclf_type, abserr, seed):
 
 @cli.command("process_train")
 @click.argument("fnames", nargs=-1)
-def process_train_cmd(fnames):
+@click.option("--nselected", default=5)
+def process_train_cmd(fnames, nselected):
     jsons = sum((util.read_json_printfile(fname) for fname in fnames), start=[])
     results = {}
     for j in jsons:
@@ -74,17 +75,33 @@ def process_train_cmd(fnames):
         key = util.get_key(j)
         models = j["models"]
 
-        print(key, dname, fold)
+        if dname not in util.DNAMES_SUBSUB:
+            continue
 
         forkey = util.get_or_insert(results, key, lambda: {})
         fordname = util.get_or_insert(forkey, dname, lambda: {})
-        onfront = util.pareto_front(models, mkey="mtest", skey="nnzleafs")
 
-        for m, b in zip(models, onfront):
+        xs = np.array([m["nleafs"] for m in models])
+        ys = np.array([m["mvalid"] for m in models])
+        onfront, onhull = util.pareto_front_xy(xs, ys)
+
+        print(key, dname, fold, "#onhull", onhull.sum(), onfront.sum())
+
+        #if fold == 0:
+        #    import matplotlib.pyplot as plt
+        #    fig, ax = plt.subplots()
+        #    ax.set_title(dname)
+        #    ax.plot(xs, ys, ".")
+        #    ax.plot(xs[onfront], ys[onfront], "o")
+        #    ax.plot(xs[onhull], ys[onhull], "x")
+        #    plt.show()
+
+        for m, b, h in zip(models, onfront, onhull):
             params = m["params"]
             params_hash = util.params_hash(params)
             #print(params_hash, params)
             m["on_pareto_front"] = b
+            m["on_chull_front"] = h
             forparams = util.get_or_insert(fordname, params_hash, lambda: {})
             if fold in m:
                 print(f"overriding {fold} for {key} {dname} {params_hash}")
@@ -96,9 +113,64 @@ def process_train_cmd(fnames):
         for dname, fordname in forkey.items():
             for params_hash, folds in fordname.items():
                 on_any_pareto_front = any(m["on_pareto_front"] for m in folds.values())
+                on_any_chull_front = any(m["on_chull_front"] for m in folds.values())
                 for m in folds.values():
                     m["on_any_pareto_front"] = on_any_pareto_front
+                    m["on_any_chull_front"] = on_any_chull_front
+                    m["selected"] = False
 
+    # Figure out which parameter sets to use
+    # (1) on the convex hulll front in at least one of the folds
+    # (2) representative of the full model size range
+    for key, forkey in results.items():
+        for dname, fordname in forkey.items():
+            hashes_onhull = {
+                params_hash
+                for params_hash, folds in fordname.items()
+                if folds[0]["on_any_chull_front"]
+            }
+
+            def mean_mvalid(h): 
+                return np.mean([m["mvalid"] for m in fordname[h].values()])
+            def mean_nleafs(h): 
+                return np.mean([m["nleafs"] for m in fordname[h].values()])
+
+            seen = set()
+            hs = []
+            for h in sorted(hashes_onhull, key=mean_mvalid, reverse=True):
+                value = np.mean([m["nleafs"]/2 for m in fordname[h].values()])
+                value = int(np.round(value))
+                if value not in seen:
+                    hs.append(h)
+                    seen.add(value)
+
+            hs = sorted(hs, key=mean_nleafs)
+            hs = [hs[i] for i in np.linspace(0, len(hs)-1, min(nselected, len(hs))).round().astype(int)]
+
+            for h in hs:
+                for fold in fordname[h].keys():
+                    fordname[h][fold]["selected"] = True
+
+            print(dname, sum(folds[1]["on_any_pareto_front"] for folds in fordname.values()))
+            print(" " * len(dname), sum(folds[1]["on_any_chull_front"] for folds in fordname.values()))
+            print(" " * len(dname), len(hs))
+            print(np.round([np.mean([m["nleafs"] for m in fordname[h].values()]) for h in hs], 0))
+            print(np.round([np.mean([m["params"]["n_estimators"] for m in fordname[h].values()]) for h in hs], 0))
+            print(np.round([np.mean([m["params"]["max_depth"] for m in fordname[h].values()]) for h in hs], 0))
+
+
+            #import matplotlib.pyplot as plt
+            #fig, ax = plt.subplots()
+            #ax.set_title(dname)
+            #xs = np.array([np.mean([m["nleafs"] for m in fordname[h].values()]) for h in fordname.keys()])
+            #ys = np.array([np.mean([m["mtest"] for m in fordname[h].values()]) for h in fordname.keys()])
+            #ax.plot(xs, ys, ".")
+            #xs = np.array([np.mean([m["nleafs"] for m in fordname[h].values()]) for h in hs])
+            #ys = np.array([np.mean([m["mtest"] for m in fordname[h].values()]) for h in hs])
+            #ax.plot(xs, ys, "x")
+            #plt.show()
+
+    # Write out to file
     util.write_train_results(results)
 
 
@@ -283,7 +355,10 @@ def compress_cmd(dname, model_type, linclf_type, fold, abserr, seed, silent, plo
         #if not (tres["on_any_pareto_front"] and not tres["on_pareto_front"]):
         #    continue
 
-        if not tres["on_any_pareto_front"]:
+        #if not tres["on_any_pareto_front"]:
+        #    continue
+
+        if not tres["on_pareto_front"]:
             continue
 
         # Retrain the model
@@ -372,7 +447,7 @@ def compress_cmd(dname, model_type, linclf_type, fold, abserr, seed, silent, plo
     results = {
 
         # Experimental settings
-        "cmd": "compress",
+        "cmd": f"compress{abserr*1000:03.0f}",
         "date_time": util.nowstr(),
         "hostname": os.uname()[1],
         "dname": dname,
@@ -438,15 +513,15 @@ def compress_cmd(dname, model_type, linclf_type, fold, abserr, seed, silent, plo
               default="Lasso")
 @click.option("--fold", default=0)
 @click.option("--abserr", default=0.01)
+@click.option("--max_rounds", default=2)
 @click.option("--timeout", default=15*60)
 @click.option("--seed", default=util.SEED)
 @click.option("--silent", is_flag=True, default=False)
 def verification_cmd(
-    dname, model_type, linclf_type, fold, abserr, timeout, seed, silent
+    dname, model_type, linclf_type, fold, abserr, max_rounds, timeout, seed, silent
 ):
     d, dtrain, dvalid, dtest = util.get_dataset(dname, seed, linclf_type, fold, silent)
     model_class = d.get_model_class(model_type)
-    max_rounds = 2
 
     if linclf_type == "Lasso":  # binaryclf as a regr problem
         def mymetric(ytrue, ypred):
@@ -457,38 +532,14 @@ def verification_cmd(
 
     key = util.get_key(model_type, linclf_type, seed)
     train_results = util.load_train_results()[key][dname]
-    compr_results = util.load_compress_results()[key][dname]
-
-    #for params_hash, folds in train_results.items():
-
-    params_hashes = [h for h, folds in train_results.items() if folds[fold]["on_pareto_front"]]
-    params_hashes = sorted(params_hashes, key=lambda h: train_results[h][fold]["nnzleafs"])
-
-    indices = np.unique(np.linspace(0, len(params_hashes)-1, 5).round().astype(int))
-    params_hashes = [params_hashes[i] for i in indices]
-
-    print(
-        np.array(
-            [
-                [train_results[h][fold]["nnzleafs"] for h in params_hashes],
-                [compr_results[h][fold]["nnzleafs"] for h in params_hashes],
-            ]
-        )
-    )
-    print(
-        np.array(
-            [
-                [np.round(train_results[h][fold]["mtest"],3) for h in params_hashes],
-                [np.round(compr_results[h][fold]["mtest"],3) for h in params_hashes],
-            ]
-        )
-    )
 
     compress_results = []
-    for params_hash in params_hashes:
-        tres = train_results[params_hash][fold]
-        cres = compr_results[params_hash][fold]
+    for params_hash, folds in train_results.items():
+        tres = folds[fold]
         params = tres["params"]
+
+        if not tres["selected"]:
+            continue
 
         # Retrain the model
         clf, train_time = dtrain.train(model_class, params)
@@ -530,33 +581,12 @@ def verification_cmd(
         )
         compr.no_convergence_warning = True
         compr_time = time.time()
-        at_compr = compr.compress(max_rounds=1) # !!!!!!!!!!!!!!
+        at_compr = compr.compress(max_rounds=max_rounds)
         compr_time = time.time() - compr_time
         record = compr.records[-1]
 
-
-        ## VERIFICATION: (1) HOW MANY OCs?
-        nocs_orig, nocs_orig_time, nocs_orig_timeout = verification.count_ocs(
-            at_orig, timeout
-        )
-        nocs_compr, nocs_compr_time, nocs_compr_timeout = verification.count_ocs(
-            at_compr, timeout
-        )
-
-        ## VERIFICATION: (2) Empricial robustness (exact + approx)
-        n = 100
-        rob_orig_exact, rob_orig_exact_time = verification.emp_robustness(
-            at_orig, dtest.X, dtest.y, n, exact=True
-        )
-        rob_orig_approx, rob_orig_approx_time = verification.emp_robustness(
-            at_orig, dtest.X, dtest.y, n, exact=False
-        )
-        rob_compr_exact, rob_compr_exact_time = verification.emp_robustness(
-            at_compr, dtest.X, dtest.y, n, exact=True
-        )
-        rob_compr_approx, rob_compr_approx_time = verification.emp_robustness(
-            at_compr, dtest.X, dtest.y, n, exact=False
-        )
+        vtimeout = 5*60
+        vn = 500
 
         compress_result = {
             "params": params,
@@ -572,33 +602,20 @@ def verification_cmd(
             "nnzleafs": int(record.nnzleafs),
             "max_depth": int(at_compr.max_depth()),
 
-
             # Verification
             "verification": {
-                "orig": {
-                    "nocs": nocs_orig,
-                    "nocs_time": nocs_orig_time,
-                    "nocs_timeout": nocs_orig_timeout,
-                    "exact_emp_rob": rob_orig_exact,
-                    "exact_emp_rob_time":rob_orig_exact_time,
-                    "approx_emp_rob": rob_orig_approx,
-                    "approx_emp_rob_time": rob_orig_approx_time,
-                },
-                "compr": {
-                    "nocs": nocs_compr,
-                    "nocs_time": nocs_compr_time,
-                    "nocs_timeout": nocs_compr_timeout,
-                    "exact_emp_rob": rob_compr_exact,
-                    "exact_emp_rob_time":rob_compr_exact_time,
-                    "approx_emp_rob": rob_compr_approx,
-                    "approx_emp_rob_time": rob_compr_approx_time,
-                }
-            }
+                "orig": verification.run_verification_tasks(
+                    at_orig, dtest.X, dtest.y, timeout=vtimeout, n=vn
+                ) if abserr == 0.005 else None,
+                "compr": verification.run_verification_tasks(
+                    at_compr, dtest.X, dtest.y, timeout=vtimeout, n=vn
+                ),
+            },
         }
         compress_results.append(compress_result)
+        if not silent:
+            __import__('pprint').pprint(compress_result)
         del compr
-
-        break
 
     results = {
 

@@ -190,9 +190,19 @@ def pareto_front_xy(x, y):
         else:
             break
 
+    # Check if on convex hull
+    from scipy.spatial import ConvexHull
+    xy = np.hstack((x.reshape(-1, 1), y.reshape(-1, 1)))
+    ch = ConvexHull(xy)
+    onhull = np.zeros_like(onfront)
+    onhull[ch.vertices] = True
+    onhull &= onfront
+
     onfront_inv_perm = np.zeros_like(onfront)
     onfront_inv_perm[perm] = onfront
-    return onfront_inv_perm
+    onhull_inv_perm = np.zeros_like(onfront)
+    onhull_inv_perm[perm] = onhull
+    return onfront_inv_perm, onhull_inv_perm
 
 
 def convex_hull_front_xy(xy):
