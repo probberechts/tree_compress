@@ -4,17 +4,47 @@ import click
 import veritas
 import numpy as np
 import time
+import warnings
+import prada
 from sklearn.metrics import zero_one_loss
 from scipy.sparse import csr_matrix
 from sklearn.linear_model import LogisticRegression
-
+from sklearn.exceptions import ConvergenceWarning
 
 import util
 import tree_compress
 
+
 @click.group()
 def cli():
     pass
+
+@cli.command("list")
+@click.option("--cmd", type=click.Choice(["train", "compress"]), default="train")
+@click.option("--linclf_type", type=click.Choice(["LogisticRegression", "Lasso"]),
+              default="Lasso")
+@click.option("--penalty", type=click.Choice(["l1", "l2"]),
+              default="l2")
+@click.option("--seed", default=util.SEED)
+def print_configs(cmd, linclf_type, penalty, seed):
+    for dname in util.DNAMES:
+        d = prada.get_dataset(dname, seed=seed, silent=True)
+
+        for model_type in ["xgb"]:#, "dt"]:
+            folds = [i for i in range(util.NFOLDS)]
+
+            grid = d.paramgrid(fold=folds)
+
+            for cli_param in grid:
+                print("python can_experiment.py leaf_refine",
+                      dname,
+                      "--model_type", model_type,
+                      "--linclf_type", linclf_type,
+                      "--penalty", penalty,
+                      "--fold", cli_param["fold"],
+                      "--seed", seed,
+                      "--silent")
+
 
 @cli.command("leaf_refine")
 @click.argument("dname")
@@ -61,37 +91,49 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
 
         refine_time = time.time()
         if penalty == "l2":
-            refiner = LogisticRegression(penalty="l2", fit_intercept=True,
-                                            solver="liblinear", 
-                                            dual=True,
-                                            max_iter=10000,
-                                            warm_start=False)
+            refiner = LogisticRegression(
+                penalty="l2",
+                fit_intercept=True,
+                n_jobs=1,
+                solver="liblinear",
+                dual=True,
+                max_iter=10000,
+                warm_start=False,
+            )
         else:
-            refiner = LogisticRegression(penalty="l1", fit_intercept=True,
-                                solver="liblinear", 
-                                max_iter=3000,
-                                warm_start=False)
-            
+            refiner = LogisticRegression(
+                penalty="l1",
+                fit_intercept=True,
+                n_jobs=1,
+                solver="liblinear",
+                max_iter=3000,
+                warm_start=False,
+            )
+
         alpha_list = [10000, 1000, 100, 10, 1, 0.1, 0.01, 0.001, 0.0001, 0.00001]
-        sparse_train_x = transform_data_sparse(at_orig,dtrain.X) 
-        sparse_valid_x = transform_data_sparse(at_orig,dvalid.X)
+        sparse_train_x = transform_data_sparse(at_orig, dtrain.X)
+        sparse_valid_x = transform_data_sparse(at_orig, dvalid.X)
         best_score = float('inf')
-        for alpha in  alpha_list:
-            refiner.set_params(C = 1/alpha)
-            refiner.fit(sparse_train_x,dtrain.y)
+        for alpha in alpha_list:
+            refiner.set_params(C=1 / alpha)
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                refiner.fit(sparse_train_x, dtrain.y)
             score = zero_one_loss(dvalid.y, refiner.predict(sparse_valid_x))
             if score < best_score:
                 best_score = score
                 best_alpha = alpha
-        refiner.set_params(C = 1/best_alpha)
-        refiner.fit(sparse_train_x,dtrain.y)
-        
+
+        refiner.set_params(C=1 / best_alpha)
+        refiner.fit(sparse_train_x, dtrain.y)
+
         at_refined = at_orig.copy()
-        at_refined = set_new_leaf_vals(at_refined, refiner.intercept_,refiner.coef_[0])
+        at_refined = set_new_leaf_vals(at_refined, refiner.intercept_[0], refiner.coef_[0])
         refine_time = time.time() - refine_time
 
         refine_result = {
             "params": params,
+            "best_alpha": best_alpha,
 
             # Performance of the compressed model
             "compr_time": refine_time,
@@ -121,6 +163,7 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
 
         # Any additional parameters
         #<param>: <value>
+        "penalty": penalty,
 
         # Result for all the hyper parameter settings
         "models": refine_results,
@@ -158,7 +201,7 @@ def transform_data_sparse(at, x):
                               (row_ind, col_ind)), shape=(num_rows, num_cols))
 
 def set_new_leaf_vals(at, base_score, new_leaf_vals):
-    at.set_base_score(0,base_score)
+    at.set_base_score(0, base_score)
     offset = 0
     for tree_index, t in enumerate(at):
         for count , leaf_id in enumerate(t.get_leaf_ids()):

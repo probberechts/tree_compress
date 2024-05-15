@@ -61,6 +61,48 @@ DNAMES = [
     #"KddCup99",
 ]
 
+DNAMES_SUB = [
+    "Electricity",
+    "MagicTelescope",
+    "MiniBooNE",
+    "EyeMovements",
+    "Jannis",
+    "Heloc",
+    "Credit",
+    "California",
+    "Albert",
+    "CompasTwoYears",
+    "Vehicle",
+    "Spambase",
+    "Phoneme",
+    "Nomao",
+    "Adult",
+    "Ijcnn1",
+    "Mnist[2v4]",
+    "Houses[bin]",
+    "DryBean[6vRest]",
+    "Volkert[2v7]",
+]
+
+DNAMES_SUBSUB = [
+    "Electricity",
+    "MiniBooNE",
+    "Jannis",
+    "Credit",
+    "California",
+    "CompasTwoYears",
+    "Vehicle",
+    "Spambase",
+    "Phoneme",
+    "Nomao",
+    "Adult",
+    "Ijcnn1",
+    "Mnist[2v4]",
+    "DryBean[6vRest]",
+    "Volkert[2v7]",
+]
+
+
 def get_dataset(dname, seed, linclf_type, fold, silent):
     d = prada.get_dataset(dname, seed=seed, silent=silent)
     d.load_dataset()

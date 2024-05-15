@@ -9,6 +9,7 @@ import prada
 import model_params
 import util
 import tree_compress
+import verification
 
 from sklearn.metrics import balanced_accuracy_score, root_mean_squared_error
      
@@ -428,6 +429,205 @@ def compress_cmd(dname, model_type, linclf_type, fold, abserr, seed, silent, plo
 
     #    plt.show()
 
+
+@cli.command("verification")
+@click.argument("dname")
+@click.option("-m", "--model_type", type=click.Choice(["xgb", "rf", "lgb", "dt"]),
+              default="xgb")
+@click.option("--linclf_type", type=click.Choice(["LogisticRegression", "Lasso"]),
+              default="Lasso")
+@click.option("--fold", default=0)
+@click.option("--abserr", default=0.01)
+@click.option("--timeout", default=15*60)
+@click.option("--seed", default=util.SEED)
+@click.option("--silent", is_flag=True, default=False)
+def verification_cmd(
+    dname, model_type, linclf_type, fold, abserr, timeout, seed, silent
+):
+    d, dtrain, dvalid, dtest = util.get_dataset(dname, seed, linclf_type, fold, silent)
+    model_class = d.get_model_class(model_type)
+    max_rounds = 2
+
+    if linclf_type == "Lasso":  # binaryclf as a regr problem
+        def mymetric(ytrue, ypred):
+            return balanced_accuracy_score(ytrue > 0.0, ypred > 0.0)
+    else:
+        def mymetric(ytrue, ypred):
+            return balanced_accuracy_score(ytrue, ypred)
+
+    key = util.get_key(model_type, linclf_type, seed)
+    train_results = util.load_train_results()[key][dname]
+    compr_results = util.load_compress_results()[key][dname]
+
+    #for params_hash, folds in train_results.items():
+
+    params_hashes = [h for h, folds in train_results.items() if folds[fold]["on_pareto_front"]]
+    params_hashes = sorted(params_hashes, key=lambda h: train_results[h][fold]["nnzleafs"])
+
+    indices = np.unique(np.linspace(0, len(params_hashes)-1, 5).round().astype(int))
+    params_hashes = [params_hashes[i] for i in indices]
+
+    print(
+        np.array(
+            [
+                [train_results[h][fold]["nnzleafs"] for h in params_hashes],
+                [compr_results[h][fold]["nnzleafs"] for h in params_hashes],
+            ]
+        )
+    )
+    print(
+        np.array(
+            [
+                [np.round(train_results[h][fold]["mtest"],3) for h in params_hashes],
+                [np.round(compr_results[h][fold]["mtest"],3) for h in params_hashes],
+            ]
+        )
+    )
+
+    compress_results = []
+    for params_hash in params_hashes:
+        tres = train_results[params_hash][fold]
+        cres = compr_results[params_hash][fold]
+        params = tres["params"]
+
+        # Retrain the model
+        clf, train_time = dtrain.train(model_class, params)
+        mtrain = dtrain.metric(clf)
+        mvalid = dvalid.metric(clf)
+        mtest = dtest.metric(clf)
+        at_orig = veritas.get_addtree(clf, silent=True)
+
+        if not silent:
+            print(f"{model_type} {d.metric_name}:")
+            print(
+                f"    RETRAINED MODEL: mtr {mtrain:.3f} mva {mvalid:.3f} mte {mtest:.3f}",
+                f"in {train_time:.2f}s",
+            )
+            print(
+                f"     PREVIOUS MODEL: mtr {tres['mtrain']:.3f} mva {tres['mvalid']:.3f}",
+                f"mte {tres['mtest']:.3f}",
+                f"in {tres['train_time']:.2f}s",
+                "!! this should be the same !!"
+            )
+
+        assert np.abs(mtrain - tres["mtrain"]) < 1e-5
+        assert np.abs(mvalid - tres["mvalid"]) < 1e-5
+        assert np.abs(mtest - tres["mtest"]) < 1e-5
+
+        data = tree_compress.Data(
+                dtrain.X.to_numpy(), dtrain.y.to_numpy(),
+                dtest.X.to_numpy(), dtest.y.to_numpy(),
+                dvalid.X.to_numpy(), dvalid.y.to_numpy())
+
+        compr = tree_compress.LassoCompress(
+            data,
+            at_orig,
+            metric=mymetric,
+            isworse=lambda v, ref: ref-v > abserr,
+            linclf_type=linclf_type,
+            seed=seed,
+            silent=silent
+        )
+        compr.no_convergence_warning = True
+        compr_time = time.time()
+        at_compr = compr.compress(max_rounds=1) # !!!!!!!!!!!!!!
+        compr_time = time.time() - compr_time
+        record = compr.records[-1]
+
+
+        ## VERIFICATION: (1) HOW MANY OCs?
+        nocs_orig, nocs_orig_time, nocs_orig_timeout = verification.count_ocs(
+            at_orig, timeout
+        )
+        nocs_compr, nocs_compr_time, nocs_compr_timeout = verification.count_ocs(
+            at_compr, timeout
+        )
+
+        ## VERIFICATION: (2) Empricial robustness (exact + approx)
+        n = 100
+        rob_orig_exact, rob_orig_exact_time = verification.emp_robustness(
+            at_orig, dtest.X, dtest.y, n, exact=True
+        )
+        rob_orig_approx, rob_orig_approx_time = verification.emp_robustness(
+            at_orig, dtest.X, dtest.y, n, exact=False
+        )
+        rob_compr_exact, rob_compr_exact_time = verification.emp_robustness(
+            at_compr, dtest.X, dtest.y, n, exact=True
+        )
+        rob_compr_approx, rob_compr_approx_time = verification.emp_robustness(
+            at_compr, dtest.X, dtest.y, n, exact=False
+        )
+
+        compress_result = {
+            "params": params,
+
+            # Performance of the compressed model
+            "compr_time": compr_time,
+            "mtrain": float(record.mtrain),
+            "mvalid": float(record.mvalid),
+            "mtest": float(record.mtest),
+            "ntrees": int(record.ntrees),
+            "nnodes": int(record.nnodes),
+            "nleafs": int(at_compr.num_leafs()),
+            "nnzleafs": int(record.nnzleafs),
+            "max_depth": int(at_compr.max_depth()),
+
+
+            # Verification
+            "verification": {
+                "orig": {
+                    "nocs": nocs_orig,
+                    "nocs_time": nocs_orig_time,
+                    "nocs_timeout": nocs_orig_timeout,
+                    "exact_emp_rob": rob_orig_exact,
+                    "exact_emp_rob_time":rob_orig_exact_time,
+                    "approx_emp_rob": rob_orig_approx,
+                    "approx_emp_rob_time": rob_orig_approx_time,
+                },
+                "compr": {
+                    "nocs": nocs_compr,
+                    "nocs_time": nocs_compr_time,
+                    "nocs_timeout": nocs_compr_timeout,
+                    "exact_emp_rob": rob_compr_exact,
+                    "exact_emp_rob_time":rob_compr_exact_time,
+                    "approx_emp_rob": rob_compr_approx,
+                    "approx_emp_rob_time": rob_compr_approx_time,
+                }
+            }
+        }
+        compress_results.append(compress_result)
+        del compr
+
+        break
+
+    results = {
+
+        # Experimental settings
+        "cmd": "compress",
+        "date_time": util.nowstr(),
+        "hostname": os.uname()[1],
+        "dname": dname,
+        "model_type": model_type,
+        "fold": fold,
+        "linclf_type": linclf_type,
+        "seed": seed,
+        "metric_name": d.metric_name,
+
+        # Compression params
+        "abserr": abserr,
+        "max_rounds": max_rounds,
+
+        # Results for compression on all models on the pareto front
+        "models": compress_results,
+
+        # Data characteristics
+        "ntrain": dtrain.X.shape[0],
+        "nvalid": dvalid.X.shape[0],
+        "ntest": dtest.X.shape[0],
+    }
+    if not silent:
+        __import__('pprint').pprint(results)
+    print(json.dumps(results))
 
 
 if __name__ == "__main__":
