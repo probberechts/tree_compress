@@ -6,15 +6,21 @@ import numpy as np
 import time
 import warnings
 import prada
-from sklearn.metrics import zero_one_loss
 from scipy.sparse import csr_matrix
 from sklearn.linear_model import LogisticRegression
+from sklearn.exceptions import ConvergenceWarning
 import torch
+import random
 import torch.nn as nn
 
 
 import util
 import tree_compress
+
+
+np.random.seed(38)
+torch.manual_seed(38)
+random.seed(49)
 
 
 @click.group()
@@ -68,12 +74,17 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
     # class. If `linclf_type == LogisticRegression`, it is normal binary
     # classification.
     key = util.get_key(model_type, linclf_type, seed)
-    train_results = util.load_train_results()[key][dname][fold]
-    train_results = [p for p in train_results if p["on_pareto_front"]]
+    train_results = util.load_train_results()[key][dname]
     refine_results = []
 
-    for tres in train_results:
+    assert linclf_type == "Lasso"
+
+    for params_hash, folds in train_results.items():
+        tres = folds[fold]
         params = tres["params"]
+
+        if not tres["selected"]:
+            continue
 
         # Retrain the model
         clf, train_time = dtrain.train(model_class, params)
@@ -81,6 +92,19 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
         mvalid = dvalid.metric(clf)
         mtest =  dtest.metric(clf)
         at_orig = veritas.get_addtree(clf, silent=True)
+
+        if not silent:
+            print(f"{model_type} {d.metric_name}:")
+            print(
+                f"    RETRAINED MODEL: mtr {mtrain:.3f} mva {mvalid:.3f} mte {mtest:.3f}",
+                f"in {train_time:.2f}s",
+            )
+            print(
+                f"     PREVIOUS MODEL: mtr {tres['mtrain']:.3f} mva {tres['mvalid']:.3f}",
+                f"mte {tres['mtest']:.3f}",
+                f"in {tres['train_time']:.2f}s",
+                "!! this should be the same !!"
+            )
 
         assert np.abs(mtrain - tres["mtrain"]) < 1e-5
         assert np.abs(mvalid - tres["mvalid"]) < 1e-5
@@ -91,17 +115,24 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
         if penalty == "lrl1":
             refiner = LRPlusL1Refiner()
         elif penalty == "l2":
-            refiner = LogisticRegression(penalty="l2", fit_intercept=True,
-                                            solver="liblinear", 
-                                            dual=True,
-                                            max_iter=10000,
-                                            warm_start=False)
+            refiner = LogisticRegression(
+                penalty="l2",
+                fit_intercept=True,
+                solver="liblinear",
+                dual=True,
+                max_iter=10000,
+                warm_start=False,
+                random_state=1351,
+            )
         else:
-            refiner = LogisticRegression(penalty="l1", fit_intercept=True,
-                                solver="liblinear", 
-                                max_iter=3000,
-                                warm_start=False)
-            
+            refiner = LogisticRegression(
+                penalty="l1",
+                fit_intercept=True,
+                solver="liblinear",
+                max_iter=3000,
+                warm_start=False,
+                random_state=3582134,
+            )
 
         sparse_train_x = transform_data_sparse(at_orig,dtrain.X) 
         sparse_valid_x = transform_data_sparse(at_orig,dvalid.X)
@@ -112,39 +143,45 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
 
             #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             alpha_list = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.925,0.955,0.975,1]
-            best_score = float('inf')
+            best_score = -np.inf
             for alpha in  alpha_list:
+                print(alpha, len(at_orig))
                 refiner.set_params(at_orig, alpha)
                 refiner.refine(50, sparse_train_x, dtrain.y)
                 preds = refiner(torch.from_numpy(sparse_valid_x.todense())).detach().numpy()
-                preds[preds > 0] = 1
-                preds[preds <= 0] = -1
-                score = zero_one_loss(dvalid.y,preds )
-                if score < best_score:
+                score = dvalid.metric(preds > 0.0)
+                if score > best_score:
                     best_score = score
                     best_alpha = alpha
             refiner.set_params(at_orig, best_alpha)
             refiner.refine(50, sparse_train_x, dtrain.y)
             
             at_refined = at_orig.copy()
-            at_refined = set_new_addtree(refiner.tree_weights.detach().numpy(), [ w.detach().numpy() for w in refiner.leaf_weights], refiner.base_score.detach().numpy(), at_refined)
-            
+            at_refined = set_new_addtree(
+                refiner.tree_weights.detach().numpy(),
+                [w.detach().numpy() for w in refiner.leaf_weights],
+                refiner.base_score.detach().numpy(),
+                at_refined,
+            )
 
         else:
             alpha_list = [10000, 1000, 100, 10, 1, 0.1, 0.01, 0.001, 0.0001, 0.00001]
-            best_score = float('inf')
+            best_score = -np.inf
             for alpha in  alpha_list:
                 refiner.set_params(C = 1/alpha)
-                refiner.fit(sparse_train_x,dtrain.y)
-                score = zero_one_loss(dvalid.y, refiner(sparse_valid_x))
-                if score < best_score:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                    refiner.fit(sparse_train_x, dtrain.y)
+                preds = refiner.predict(sparse_valid_x)
+                score = dvalid.metric(preds > 0.0)
+                if score > best_score:
                     best_score = score
                     best_alpha = alpha
             refiner.set_params(C = 1/best_alpha)
             refiner.fit(sparse_train_x,dtrain.y)
             
             at_refined = at_orig.copy()
-            at_refined = set_new_leaf_vals(at_refined, refiner.intercept_,refiner.coef_[0])
+            at_refined = set_new_leaf_vals(at_refined, refiner.intercept_[0], refiner.coef_[0])
         
         
         refine_time = time.time() - refine_time
@@ -166,6 +203,8 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
         }
 
         refine_results.append(refine_result)
+        if not silent:
+            __import__('pprint').pprint(refine_result)
 
     results = {
         # Experimental settings
