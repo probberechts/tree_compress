@@ -60,7 +60,7 @@ def print_configs(cmd, linclf_type, penalty, seed):
               default="xgb")
 @click.option("--linclf_type", type=click.Choice(["LogisticRegression", "Lasso"]),
               default="Lasso")
-@click.option("--penalty", type=click.Choice(["l1", "l2", "lrl1"]),
+@click.option("--penalty", type=click.Choice(["l1", "l2", "lrl1", "ic"]),
               default="l2")
 @click.option("--fold", default=0)
 @click.option("--seed", default=util.SEED)
@@ -163,6 +163,31 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
                 refiner.base_score.detach().numpy(),
                 at_refined,
             )
+
+        elif penalty == "ic":
+            # alpha here is number of expected trees in the ensemble
+            best_score = -np.inf
+            ensamble_proba = np.asarray([(t.eval(dtrain.X).clip(-1,1) + 1) / 2 for t in at_orig])
+            ensamble_proba = np.concatenate((1-ensamble_proba,ensamble_proba),axis=2)
+            ic_list = individual_contribution(ensamble_proba, (np.asarray(dtrain.y) + 1) / 2)
+            sorted_trees = [at_orig[i] for i in np.argsort(ic_list)]
+            temp_at = veritas.AddTree(1, veritas.AddTreeType.REGR)
+            temp_at.set_base_score(0,at_orig.get_base_score(0))
+            for alpha in range(len(at_orig)):
+                temp_at.add_tree(sorted_trees[alpha])
+                score = dvalid.metric(temp_at)
+                if score > best_score:
+                    best_score = score
+                    best_alpha = alpha + 1                
+
+            
+            at_refined = veritas.AddTree(1, veritas.AddTreeType.REGR)
+            at_refined.set_base_score(0,at_orig.get_base_score(0))
+            for alpha in range(best_alpha):
+                at_refined.add_tree(sorted_trees[alpha])
+
+
+
 
         else:
             alpha_list = [10000, 1000, 100, 10, 1, 0.1, 0.01, 0.001, 0.0001, 0.00001]
@@ -278,44 +303,47 @@ def set_new_addtree(tree_weights, leaf_weights, base_score, at):
 
 
 
-def individual_contribution(i, ensemble_proba, target):
+def individual_contribution(ensemble_proba, target):
     """
     Compute the individual contributions of each classifier wrt. the entire ensemble. Return the negative contribution due to the minimization.
 
     Reference:
         Lu, Z., Wu, X., Zhu, X., & Bongard, J. (2010). Ensemble pruning via individual contribution ordering. Proceedings of the ACM SIGKDD International Conference on Knowledge Discovery and Data Mining, 871–880. https://doi.org/10.1145/1835804.1835914
     """
-    iproba = ensemble_proba[i,:,:]
-    n = iproba.shape[0]
 
-    predictions = iproba.argmax(axis=1)
-    V = np.zeros(ensemble_proba.shape)
-    idx = ensemble_proba.argmax(axis=2)
-    V[np.arange(ensemble_proba.shape[0])[:,None],np.arange(ensemble_proba.shape[1]),idx] = 1
-    V = V.sum(axis=0)
+    ic_list = []
+    for i in range(len(ensemble_proba)):
+        iproba = ensemble_proba[i,:,:]
+        n = iproba.shape[0]
 
-    IC = 0
-    #V = all_proba.argmax(axis=2)
-    #predictions = iproba.argmax(axis=1)
-    #V = all_proba.sum(axis=0)#.argmax(axis=1)
+        predictions = iproba.argmax(axis=1)
+        V = np.zeros(ensemble_proba.shape)
+        idx = ensemble_proba.argmax(axis=2)
+        V[np.arange(ensemble_proba.shape[0])[:,None],np.arange(ensemble_proba.shape[1]),idx] = 1
+        V = V.sum(axis=0)
 
-    for j in range(n):
-        if (predictions[j] == target[j]):
-            
-            # case 1 (minority group)
-            # label with majority votes on datapoint  = np.argmax(V[j, :]) 
-            if(predictions[j] != np.argmax(V[j,:])):
-                IC = IC + (2*(np.max(V[j,:])) - V[j, predictions[j]])
-                
-            else: # case 2 (majority group)
-                # calculate second largest nr of votes on datapoint i
-                sortedArray = np.sort(np.copy(V[j,:]))
-                IC = IC + (sortedArray[-2])
-                
-        else:
-            # case 3 (wrong prediction)
-            IC = IC + (V[j, target[j]]  -  V[j, predictions[j]] - np.max(V[j,:]) )
-    return - 1.0 * IC
+        IC = 0
+        #V = all_proba.argmax(axis=2)
+        #predictions = iproba.argmax(axis=1)
+        #V = all_proba.sum(axis=0)#.argmax(axis=1)
+
+        for j in range(n):
+            if (predictions[j] == target[j]):                
+                # case 1 (minority group)
+                # label with majority votes on datapoint  = np.argmax(V[j, :]) 
+                if(predictions[j] != np.argmax(V[j,:])):
+                    IC = IC + (2*(np.max(V[j,:])) - V[j, predictions[j]])
+                    
+                else: # case 2 (majority group)
+                    # calculate second largest nr of votes on datapoint i
+                    sortedArray = np.sort(np.copy(V[j,:]))
+                    IC = IC + (sortedArray[-2])
+                    
+            else:
+                # case 3 (wrong prediction)
+                IC = IC + (V[j,  int(target[j])]  -  V[j, predictions[j]] - np.max(V[j,:]) )
+        ic_list.append(- 1.0 * IC)
+    return ic_list
 
 
 
