@@ -184,7 +184,14 @@ def process_compress_cmd(fnames):
         fold = j["fold"]
         key = util.get_key(j)
 
-        print(key, dname, fold)
+        if "abserr" in j:
+            name = f'{j["abserr"]*1000:03.0f}'
+        elif j["cmd"].startswith("lr_"):
+            name = j["cmd"]
+        else:
+            raise RuntimeError(f"don't know {j['cmd']=}")
+
+        print(key, dname, fold, name)
 
         forkey = util.get_or_insert(results, key, lambda: {})
         fordname = util.get_or_insert(forkey, dname, lambda: {})
@@ -194,9 +201,12 @@ def process_compress_cmd(fnames):
             params_hash = util.params_hash(params)
             #print(params_hash, params)
             forparams = util.get_or_insert(fordname, params_hash, lambda: {})
-            if fold in m:
-                print(f"overriding {fold} for {key} {dname} {params_hash}")
-            forparams[fold] = m
+            forabserr = util.get_or_insert(forparams, name, lambda: {})
+            if fold in forabserr:
+                print(f"overriding {fold} for {key} {dname} {params_hash[:6]}")
+            forabserr[fold] = m
+
+    #__import__('pprint').pprint(results)
 
     util.write_compress_results(results)
 
@@ -209,28 +219,43 @@ def process_compress_cmd(fnames):
               default="Lasso")
 @click.option("--seed", default=util.SEED)
 def plot_compress_cmd(dname, model_type, linclf_type, seed):
-    if dname == "all":
-        dnames = util.DNAMES
-    else:
-        dnames = [dname]
-
     key = util.get_key(model_type, linclf_type, seed)
     all_train_results = util.load_train_results()[key]
     all_compr_results = util.load_compress_results()[key]
 
+    if dname == "all":
+        dnames = all_compr_results.keys()
+    else:
+        dnames = [dname]
+
+
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
 
-    with PdfPages(f"/tmp/figures/{key}.pdf") as pdf:
-        plt.close('all')
+    #with PdfPages(f"/tmp/figures/{key}-nnzleafs.pdf") as pdf:
+    #    for dname in dnames:
+    #        plt.close('all')
+    #        train_results = all_train_results[dname]
+    #        compr_results = all_compr_results[dname]
+    #        fig, ax, goodness_score = util.plot_it_nogekeer(
+    #            dname, train_results, compr_results, nnz=True
+    #        )
+
+    #        fig.tight_layout()
+    #        fig.savefig(f"/tmp/figures/{dname}-{key}-nnz.png")
+    #        pdf.savefig(fig) 
+
+    #        print(f"GOODNESS SCORE {dname} {goodness_score*100:.1f}%")
+
+    with PdfPages(f"/tmp/figures/{key}-nleafs.pdf") as pdf:
         for dname in dnames:
+            plt.close('all')
             train_results = all_train_results[dname]
             compr_results = all_compr_results[dname]
-            fig, ax, goodness_score = util.plot_pareto_fronts(
-                dname, train_results, compr_results
+            fig, ax, goodness_score = util.plot_it_nogekeer(
+                dname, train_results, compr_results, nnz=False
             )
 
-            fig.tight_layout()
             fig.savefig(f"/tmp/figures/{dname}-{key}.png")
             pdf.savefig(fig) 
 
@@ -585,9 +610,6 @@ def verification_cmd(
         compr_time = time.time() - compr_time
         record = compr.records[-1]
 
-        vtimeout = 5*60
-        vn = 500
-
         compress_result = {
             "params": params,
 
@@ -605,10 +627,10 @@ def verification_cmd(
             # Verification
             "verification": {
                 "orig": verification.run_verification_tasks(
-                    at_orig, dtest.X, dtest.y, timeout=vtimeout, n=vn
+                    at_orig, dtest.X, dtest.y, timeout=util.TIMEOUT, n=util.NUM_ADV_EX
                 ) if abserr == 0.005 else None,
                 "compr": verification.run_verification_tasks(
-                    at_compr, dtest.X, dtest.y, timeout=vtimeout, n=vn
+                    at_compr, dtest.X, dtest.y, timeout=util.TIMEOUT, n=util.NUM_ADV_EX
                 ),
             },
         }
@@ -620,7 +642,7 @@ def verification_cmd(
     results = {
 
         # Experimental settings
-        "cmd": "compress",
+        "cmd": f"compress{abserr*1000:03.0f}",
         "date_time": util.nowstr(),
         "hostname": os.uname()[1],
         "dname": dname,

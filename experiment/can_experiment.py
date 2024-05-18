@@ -13,14 +13,9 @@ import torch
 import random
 import torch.nn as nn
 
-
 import util
 import tree_compress
-
-
-np.random.seed(38)
-torch.manual_seed(38)
-random.seed(49)
+import verification
 
 
 @click.group()
@@ -31,11 +26,11 @@ def cli():
 @click.option("--cmd", type=click.Choice(["train", "compress"]), default="train")
 @click.option("--linclf_type", type=click.Choice(["LogisticRegression", "Lasso"]),
               default="Lasso")
-@click.option("--penalty", type=click.Choice(["l1", "l2"]),
+@click.option("--penalty", type=click.Choice(["l1", "l2", "lrl1"]),
               default="l2")
 @click.option("--seed", default=util.SEED)
 def print_configs(cmd, linclf_type, penalty, seed):
-    for dname in util.DNAMES:
+    for dname in util.DNAMES_SUBSUB:
         d = prada.get_dataset(dname, seed=seed, silent=True)
 
         for model_type in ["xgb"]:#, "dt"]:
@@ -66,6 +61,10 @@ def print_configs(cmd, linclf_type, penalty, seed):
 @click.option("--seed", default=util.SEED)
 @click.option("--silent", is_flag=True, default=False)
 def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+
     d, dtrain, dvalid, dtest = util.get_dataset(dname, seed, linclf_type, fold, silent)
     model_class = d.get_model_class(model_type)
 
@@ -145,7 +144,6 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
             alpha_list = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.925,0.955,0.975,1]
             best_score = -np.inf
             for alpha in  alpha_list:
-                print(alpha, len(at_orig))
                 refiner.set_params(at_orig, alpha)
                 refiner.refine(50, sparse_train_x, dtrain.y)
                 preds = refiner(torch.from_numpy(sparse_valid_x.todense())).detach().numpy()
@@ -225,6 +223,14 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
             "nleafs": int(at_refined.num_leafs()),
             "nnzleafs": int(tree_compress.count_nnz_leafs(at_refined)),
             "max_depth": int(at_refined.max_depth()),
+
+            # Verification
+            "verification": {
+                "orig": None,
+                "refined": verification.run_verification_tasks(
+                    at_refined, dtest.X, dtest.y, timeout=util.TIMEOUT, n=util.NUM_ADV_EX
+                ),
+            },
         }
 
         refine_results.append(refine_result)

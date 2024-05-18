@@ -12,6 +12,9 @@ from dataclasses import dataclass
 
 SEED = 5823
 
+TIMEOUT = 5*60
+NUM_ADV_EX = 500
+
 LBRACE = "{"
 RBRACE = "}"
 
@@ -295,8 +298,8 @@ def plot_pareto_fronts(dname, train_results, compr_results):
         for fold in fold_indexes:
             trm = trfolds[fold]
             com = folds[fold]
-            tr[fold, :] = [trm["nnzleafs"], trm["mtest"]]
-            co[fold, :] = [com["nnzleafs"], com["mtest"]]
+            tr[fold, :] = [trm["nleafs"], trm["mtest"]]
+            co[fold, :] = [com["nleafs"], com["mtest"], com["verification"]["compr"]["nocs_timeout"]]
 
         trs.append(tr)
         cos.append(co)
@@ -316,7 +319,7 @@ def plot_pareto_fronts(dname, train_results, compr_results):
     #co_mn = np.array([co[fold, :] for co in cos])
 
     # Front without compression
-    onfront = pareto_front_xy(tr_mn[:, 0], tr_mn[:, 1])
+    onfront, onhull = pareto_front_xy(tr_mn[:, 0], tr_mn[:, 1])
     #chull = util.convex_hull_front_xy(tr_mn[onfront])
     #chull = chull[chull[:, 0].argsort(), :]
     pareto = tr_mn[onfront, :]
@@ -370,7 +373,7 @@ def plot_pareto_fronts(dname, train_results, compr_results):
         )
 
     # Front for compressed
-    onfront = pareto_front_xy(co_mn[:, 0], co_mn[:, 1])
+    onfront, onhull = pareto_front_xy(co_mn[:, 0], co_mn[:, 1])
     pareto = co_mn[onfront, :]
     pareto = np.hstack(
         (
@@ -402,7 +405,7 @@ def plot_pareto_fronts(dname, train_results, compr_results):
     #goodness_score = num_not_dominated_over_folds[0] / num_not_dominated_over_folds[1]
     goodness_score = compr_not_dominated.mean()
 
-    ax.set_xlabel("num. non-zero leaves")
+    ax.set_xlabel("num. of leaves")
     ax.set_ylabel("bal. acc. test set")
     ax.set_xscale("log")
     ax.set_title(f"{dname}, SCORE {goodness_score*100:.1f}%")
@@ -411,6 +414,206 @@ def plot_pareto_fronts(dname, train_results, compr_results):
     ax.legend([lxgb, lcompr], ["Pareto XGB", "Pareto compressed"])
 
     return fig, ax, goodness_score
+
+
+def plot_it_nogekeer(dname, train_results, compr_results, nnz):
+    from matplotlib.lines import Line2D
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10.5, 7))
+    fig.subplots_adjust(bottom=0.3, top=0.95)
+
+    if nnz:
+        ax.set_xlabel("num. non-zero leaves")
+    else:
+        ax.set_xlabel("num. of leaves")
+    ax.set_ylabel("bal. acc. test set")
+    ax.set_xscale("log")
+    ax.set_title(f"{dname}")
+
+    custom_lines = [Line2D([0], [0], marker="o", color="navy", lw=1, ms=4),
+                    Line2D([0], [0], marker="o", color="green", lw=1, ms=4),
+                    Line2D([0], [0], marker="o", color="orange", lw=1, ms=4),
+                    Line2D([0], [0], ls=":", marker="x", color="gray",
+                           markerfacecolor="red", markeredgecolor="red", lw=1, ms=7)]
+
+    ax.legend(custom_lines, ["XGB", "Compressed", "LeafRefine+L1", "Non-enumerable"])
+
+    trs = []
+    cos = []
+    ves = []
+
+    param_hashes = train_results.keys() & compr_results.keys()
+
+    for params_hash in param_hashes:
+        trfolds = train_results[params_hash]
+        try:
+            folds005 = compr_results[params_hash]["005"]
+            folds010 = compr_results[params_hash]["010"]
+            foldslr0 = compr_results[params_hash]["lr_lrl1"]
+        except KeyError:
+            continue
+
+        fold_indexes = list(trfolds.keys() & folds005.keys() & folds010.keys())
+        tr = np.zeros((len(fold_indexes), 4))
+        co = np.zeros((len(fold_indexes), 12))
+        ve = np.zeros((len(fold_indexes), 9))
+
+        if len(fold_indexes) != NFOLDS:
+            print(f"missing folds for {dname}: {fold_indexes}")
+            continue
+
+        leafs = "nnzleafs" if nnz else "nleafs"
+
+        for fold in fold_indexes:
+            trm = trfolds[fold]
+            com05 = folds005[fold]
+            com10 = folds010[fold]
+            comlr = foldslr0[fold]
+            tr[fold, :] = [
+                trm[leafs],    # 0
+                trm["mtest"],  # 1
+                com05["verification"]["orig"]["nocs"],  # 2
+                com05["verification"]["orig"]["nocs_timeout"],  # 3
+            ]
+            co[fold, :] = [
+                com05[leafs],
+                com05["mtest"],
+                com05["verification"]["compr"]["nocs"],
+                com05["verification"]["compr"]["nocs_timeout"],
+                com10[leafs],
+                com10["mtest"],
+                com10["verification"]["compr"]["nocs"],
+                com10["verification"]["compr"]["nocs_timeout"],
+                comlr[leafs],
+                comlr["mtest"],
+                comlr["verification"]["refined"]["nocs"],
+                comlr["verification"]["refined"]["nocs_timeout"],
+            ]
+            ve[fold, :] = [
+                com05["verification"]["orig"]["exact_emp_rob"],
+                com05["verification"]["compr"]["exact_emp_rob"],
+                comlr["verification"]["refined"]["exact_emp_rob"],
+
+                (com05["verification"]["orig"]["exact_emp_rob_time"] /
+                com05["verification"]["orig"]["exact_emp_rob_n"]),
+                (com05["verification"]["compr"]["exact_emp_rob_time"] /
+                com05["verification"]["compr"]["exact_emp_rob_n"]),
+                (comlr["verification"]["refined"]["exact_emp_rob_time"] /
+                comlr["verification"]["refined"]["exact_emp_rob_n"]),
+
+                (com05["verification"]["orig"]["approx_emp_rob_time"] /
+                com05["verification"]["orig"]["approx_emp_rob_n"]),
+                (com05["verification"]["compr"]["approx_emp_rob_time"] /
+                com05["verification"]["compr"]["approx_emp_rob_n"]),
+                (comlr["verification"]["refined"]["approx_emp_rob_time"] /
+                comlr["verification"]["refined"]["approx_emp_rob_n"]),
+            ]
+
+        trs.append(tr)
+        cos.append(co)
+        ves.append(ve)
+
+    if len(cos) == 0:
+        print(f"skpping {dname}")
+        return fig, ax, 0.0
+
+    tr_mn = np.array([np.mean(tr, axis=0) for tr in trs])
+    tr_std = np.array([np.std(tr, axis=0) for tr in trs])
+    co_mn = np.array([np.mean(co, axis=0) for co in cos])
+    co_std = np.array([np.std(co, axis=0) for co in cos])
+
+    # Set nocs to max_nocs if timeout
+    max_nocs = max(tr_mn[:, 2].max(), co_mn[:, 2].max()) * 10
+    tr_mn[tr_mn[:, 3] > 0.9, 2] = max_nocs
+    co_mn[co_mn[:, 3] > 0.9, 2] = max_nocs
+    co_mn[co_mn[:, 11] > 0.9, 10] = max_nocs
+
+    ve_df = pd.DataFrame(
+        "-",
+        index=range(5),
+        columns=pd.MultiIndex.from_product(
+            [["NumLeaf", "BalAccTest", "EmpRobust", "KantchelianTime", "VeritasTime"],
+             ["XGB", "Compr", "LRL1"]]
+        ),
+    )
+    ve_mn = np.array([np.mean(ve, axis=0) for ve in ves])
+    ve_df.loc[:, ("NumLeaf", "XGB")] = tr_mn[:, 0].round(0).astype(int)
+    ve_df.loc[:, ("NumLeaf", "Compr")] = co_mn[:, 0].round(0).astype(int)
+    ve_df.loc[:, ("NumLeaf", "LRL1")] = co_mn[:, 8].round(0).astype(int)
+    ve_df.loc[:, ("NOCs", "XGB")] = [f"{n:.0f}" if n!=max_nocs else "NA" for n in tr_mn[:, 2]]
+    ve_df.loc[:, ("NOCs", "Compr")] = [f"{n:.0f}" if n!=max_nocs else "NA" for n in co_mn[:, 2]]
+    ve_df.loc[:, ("NOCs", "LRL1")] = [f"{n:.0f}" if n!=max_nocs else "NA" for n in co_mn[:, 10]]
+    ve_df.loc[:, ("BalAccTest", "XGB")] = (100*tr_mn[:, 1]).round(1)
+    ve_df.loc[:, ("BalAccTest", "Compr")] = (100*co_mn[:, 1]).round(1)
+    ve_df.loc[:, ("BalAccTest", "LRL1")] = (100*co_mn[:, 9]).round(1)
+    ve_df.loc[:, ("EmpRobust", "XGB")] = ve_mn[:, 0].round(3)
+    ve_df.loc[:, ("EmpRobust", "Compr")] = ve_mn[:, 1].round(3)
+    ve_df.loc[:, ("EmpRobust", "LRL1")] = ve_mn[:, 2].round(3)
+    ve_df.loc[:, ("KantchelianTime", "XGB")] = ve_mn[:, 3].round(2)
+    ve_df.loc[:, ("KantchelianTime", "Compr")] = ve_mn[:, 4].round(2)
+    ve_df.loc[:, ("KantchelianTime", "LRL1")] = ve_mn[:, 5].round(2)
+    ve_df.loc[:, ("VeritasTime", "XGB")] = ve_mn[:, 6].round(3)
+    ve_df.loc[:, ("VeritasTime", "Compr")] = ve_mn[:, 7].round(3)
+    ve_df.loc[:, ("VeritasTime", "LRL1")] = ve_mn[:, 8].round(3)
+    df = ve_df.sort_values(("NumLeaf", "Compr"), axis="index").reset_index(drop=True)
+
+    fig.text(0.5, 0.02, df.to_string(), fontfamily="monospace", linespacing=1.5,
+             ha="center", va="bottom", fontsize=8)
+
+    print("VERIFICATION")
+    print(ve_df.sort_values(("NumLeaf", "Compr"), axis="index").reset_index(drop=True))
+
+    def plotline(m, e, ix, iy, im, c):
+        ordr = m[:, ix].argsort()
+        ax.plot(m[ordr, ix], m[ordr, iy], "-o", c=c, lw=1.0, ms=4)
+        ax.errorbar(m[ordr, ix], m[ordr, iy],
+                    yerr=0.5*e[ordr, iy],
+                    #xerr=e[ordr, ix],
+                    alpha=0.5, zorder=-1,
+                    fmt="-o", c=c, elinewidth=0.5, capsize=2, capthick=0.5)
+
+        nonverif = m[:, im] > 0.9
+        #print(m[:, [ix, im]])
+        ax.plot(m[nonverif, ix], m[nonverif, iy], " ", marker="x", c="red", zorder=100, ms=7)
+
+    # Plot number of leaves vs. performance
+    #plotline(tr_mn, tr_std, 0, 1, 3, "navy")
+    #plotline(co_mn, co_std, 0, 1, 3, "green")
+    ##plotline(co_mn, co_std, 4, 5, 3, "orange")
+    #plotline(co_mn, co_std, 8, 9, 11, "orange")
+
+    # Plot number of ocs vs. performance
+    plotline(tr_mn, tr_std, 2, 1, 3, "navy")
+    plotline(co_mn, co_std, 2, 1, 3, "green")
+    plotline(co_mn, co_std, 10, 9, 11, "orange")
+    ax.axvline(x=max_nocs, ls=":", color="gray", lw=1.0)
+    ax.set_xlabel("Number of OCs")
+
+    mask = (ax.get_xticks() <= max_nocs/5) & (ax.get_xticks() >= 1)
+    ax.set_xticks([t for b, t in zip(mask, ax.get_xticks()) if b])
+    mask = (ax.get_xticks(minor=True) <= max_nocs/5) & (ax.get_xticks(minor=True) >= 1)
+    ax.set_xticks([t for b, t in zip(mask, ax.get_xticks(minor=True)) if b], minor=True)
+
+    for i in range(co_mn.shape[0]):
+        ax.plot(
+            #[tr_mn[i, 0], co_mn[i, 0]],
+            [tr_mn[i, 2], co_mn[i, 2]],
+            [tr_mn[i, 1], co_mn[i, 1]],
+            c="gray",
+            ls="--",
+            lw=0.5, alpha=0.5, zorder=-1
+        )
+        #ax.plot(
+        #    [tr_mn[i, 0], co_mn[i, 8]],
+        #    [tr_mn[i, 1], co_mn[i, 9]],
+        #    c="gray",
+        #    ls="-.",
+        #    lw=0.5, alpha=0.5, zorder=-1
+        #)
+
+    #ax.legend([lxgb, lcompr], ["Pareto XGB", "Pareto compressed"])
+
+    return fig, ax, 0.0
 
 
 def params_hash(params):

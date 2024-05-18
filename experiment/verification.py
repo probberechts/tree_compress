@@ -115,15 +115,23 @@ def fairness_task(at, timeout):
     config.ignore_state_when_worse_than = 0.0
     config.focal_eps = 0.95
     config.max_focal_size = 100
+    config.max_memory = 16*1024*1024*1024
 
     search = config.get_search(at_contrast)
 
     num_search_steps_per_iteration = 1000
-    stop_reason = veritas.StopReason.NONE
     has_timed_out = False
+    oom = False
 
-    while search.num_solutions() < 1 and stop_reason != veritas.StopReason.NO_MORE_OPEN:
+    while True:
         stop_reason = search.steps(num_search_steps_per_iteration)
+        if stop_reason == veritas.StopReason.NO_MORE_OPEN:
+            break
+        if stop_reason == veritas.StopReason.OUT_OF_MEMORY:
+            oom = True
+            break
+        if search.num_solutions() > 0:
+            break
         if search.time_since_start() > timeout:
             has_timed_out = True
             break
@@ -134,7 +142,7 @@ def fairness_task(at, timeout):
     t = time.time() - t
     isfair = search.num_solutions() > 0
 
-    return isfair, has_timed_out, t
+    return isfair, has_timed_out or oom, t
 
 def run_verification_tasks(at, x, y, timeout, n):
 
