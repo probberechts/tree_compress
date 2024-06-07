@@ -55,7 +55,7 @@ def print_configs(cmd, linclf_type, penalty, seed):
               default="xgb")
 @click.option("--linclf_type", type=click.Choice(["LogisticRegression", "Lasso"]),
               default="Lasso")
-@click.option("--penalty", type=click.Choice(["l1", "l2", "lrl1", "ic"]),
+@click.option("--penalty", type=click.Choice(["l1", "l2", "lrl1", "ic", "gr"]),
               default="l2")
 @click.option("--fold", default=0)
 @click.option("--seed", default=util.SEED)
@@ -113,7 +113,7 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
         refine_time = time.time()
         if penalty == "lrl1":
             refiner = LRPlusL1Refiner()
-        elif penalty == "l2":
+        elif penalty == "l2" or penalty == "gr":
             refiner = LogisticRegression(
                 penalty="l2",
                 fit_intercept=True,
@@ -161,6 +161,35 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
                 refiner.base_score.detach().numpy(),
                 at_refined,
             )
+
+        elif penalty == "gr":
+            alpha_list = [10000, 1000, 100, 10, 1, 0.1, 0.01, 0.001, 0.0001, 0.00001]
+            best_score = -np.inf
+            for alpha in  alpha_list:
+                refiner.set_params(C = 1/alpha)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+                    refiner.fit(sparse_train_x, dtrain.y)
+                at_temp_refined = at_orig.copy()
+                at_temp_refined = set_new_leaf_vals(at_temp_refined, refiner.intercept_[0], refiner.coef_[0])
+                at_temp_pruned = veritas.AddTree(at_orig.num_leaf_values(), at_orig.get_type())
+                for tree_index, t in enumerate(at_temp_refined):
+                    nt = at_temp_pruned.add_tree()
+                    gr_prune(t,t.root(),nt,nt.root(),0.1)
+                score = dvalid.metric(at_temp_pruned)
+                if score > best_score:
+                    best_score = score
+                    best_alpha = alpha
+                
+            refiner.set_params(C = 1/best_alpha)
+            refiner.fit(sparse_train_x,dtrain.y)
+            at_refined_temp = at_orig.copy()
+            at_refined_temp = set_new_leaf_vals(at_refined_temp, refiner.intercept_[0], refiner.coef_[0])
+            at_refined = veritas.AddTree(at_orig.num_leaf_values(), at_orig.get_type())
+            for tree_index, t in enumerate(at_refined_temp):
+                nt = at_refined.add_tree()
+                gr_prune(t,t.root(),nt,nt.root(),0.1)
+            
 
         elif penalty == "ic":
             # alpha here is number of expected trees in the ensemble
@@ -266,6 +295,25 @@ def leaf_refine_cmd(dname, model_type, linclf_type, penalty,fold, seed, silent):
     print(json.dumps(results))
 
 
+def gr_prune(t, n, tc, nc, threshold):
+    if t.is_leaf(n):
+        tc.set_leaf_value(nc, 0, t.get_leaf_value(n, 0))
+    elif t.is_leaf(t.left(n)) and t.is_leaf(t.right(n)):
+        # this is the interesting case
+        llv = t.get_leaf_value(t.left(n), 0)
+        rlv = t.get_leaf_value(t.right(n), 0)
+        if np.sqrt((llv - rlv)**2) < threshold:
+            tc.set_leaf_value(nc, 0, (llv+rlv)/2)
+        else:
+            split = t.get_split(n)
+            tc.split(nc, split.feat_id, split.split_value)
+            gr_prune(t, t.left(n), tc, tc.left(nc), threshold)
+            gr_prune(t, t.right(n), tc, tc.right(nc), threshold)
+    else:
+        split = t.get_split(n)
+        tc.split(nc, split.feat_id, split.split_value)
+        gr_prune(t, t.left(n), tc, tc.left(nc), threshold)
+        gr_prune(t, t.right(n), tc, tc.right(nc), threshold)
 
 def transform_data_sparse(at, x):
     row_ind, col_ind = [], []
