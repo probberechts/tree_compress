@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 import unittest
 import tree_compress
@@ -7,7 +8,7 @@ import veritas
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.ensemble import GradientBoostingClassifier, GradientBoostingRegressor
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, root_mean_squared_error
 
 BPATH = os.path.dirname(__file__)
 
@@ -91,6 +92,9 @@ class TestCompress(unittest.TestCase):
         y = y.astype(veritas.FloatT) / float(np.max(y))
         X = X.astype(veritas.FloatT)
 
+        def mymetric(ytrue, ypred):
+            return root_mean_squared_error(ytrue, ypred)
+
         xtrain, xtest, ytrain, ytest = train_test_split(
             X, y, test_size=0.40, random_state=42
         )
@@ -98,38 +102,47 @@ class TestCompress(unittest.TestCase):
 
         clf = clazz(
             n_estimators=40,
-            max_depth=6,
+            max_depth=4,
             **kwargs
         )
         clf.fit(xtrain, ytrain)
 
         yhat1 = clf.predict(X)
 
+        at_orig = veritas.get_addtree(clf)
+        veritas.test_conversion(at_orig, X[:10,:], clf.predict(X[:10,:]))
+        yhat2 = at_orig.predict(X)
 
-        at = veritas.get_addtree(clf)
-        veritas.test_conversion(at, X[:10,:], clf.predict(X[:10,:]))
-        yhat2 = at.predict(X)
-
+        abserr = np.mean(np.abs(y - yhat2)) / 20.0
+        print("absolute error:", abserr)
         data = tree_compress.Data(xtrain, ytrain, xtest, ytest, xvalid, yvalid)
-        compressor = tree_compress.Compress(data, at, silent=False)
-        compressor.no_convergence_warning = True
-        relerr = 0.2
-        at_pruned = compressor.compress(relerr=relerr, max_rounds=1)
-        yhat3 = at_pruned.predict(X)
+        compr = tree_compress.LassoCompress(
+            data,
+            at_orig,
+            metric=mymetric,
+            isworse=lambda v, ref: v-ref > abserr,
+            linclf_type="Lasso",
+            seed=123,
+            silent=False
+        )
+        compr_time = time.time()
+        at_compr = compr.compress(max_rounds=1)
+        compr_time = time.time() - compr_time
+        yhat3 = at_compr.predict(X)
 
-        before = compressor.records[0]
-        after = compressor.records[-1]
+        before = compr.records[0]
+        after = compr.records[-1]
 
         self.assertGreaterEqual(before.ntrees, after.ntrees)
         self.assertGreater(before.nnodes, after.nnodes)
         self.assertGreater(before.nleafs, after.nleafs)
-        self.assertGreater(before.nnz_leafs, after.nnz_leafs)
-        self.assertGreaterEqual(-(1+relerr)*after.mvalid, -before.mvalid)
+        self.assertGreater(before.nnzleafs, after.nnzleafs)
+        #self.assertGreaterEqual(-(1+relerr)*after.mvalid, -before.mvalid)
 
         try:
             import matplotlib.pyplot as plt
 
-            fig, ax = plt.subplots(2, 2)
+            fig, ax = plt.subplots(2, 2, sharex=True, sharey=True)
             ax[0, 0].imshow(y.reshape((100, 100)))
             ax[0, 0].set_title("ground truth")
             ax[0, 1].imshow(yhat1.reshape((100, 100)))

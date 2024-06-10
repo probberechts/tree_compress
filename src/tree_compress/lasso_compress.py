@@ -700,7 +700,11 @@ class Compress:
               np.mean(pre_tuned_at.predict(self.d.xvalid).argmax(axis=1) == self.d.yvalid))
 
     def _prune_trees(self, at, intercept, coefs, mapping):
-        atp = veritas.AddTree(self.nlv, veritas.AddTreeType.CLF_MEAN)
+        addtree_type = veritas.AddTreeType.CLF_MEAN
+        if self.is_regression():
+            addtree_type = veritas.AddTreeType.REGR
+
+        atp = veritas.AddTree(self.nlv, addtree_type)
         atpp = atp.copy()
 
         for t, (mapping0, mapping1) in zip(at, mapping):
