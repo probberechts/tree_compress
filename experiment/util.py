@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 SEED = 5823
 
-TIMEOUT = 5*60
+TIMEOUT = 30*60
 NUM_ADV_EX = 500
 
 LBRACE = "{"
@@ -419,8 +419,8 @@ def plot_pareto_fronts(dname, train_results, compr_results):
 def plot_it_nogekeer(dname, train_results, compr_results, nnz):
     from matplotlib.lines import Line2D
     import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(10.5, 7))
-    fig.subplots_adjust(bottom=0.3, top=0.95)
+    fig, ax = plt.subplots(figsize=(10.5, 10))
+    fig.subplots_adjust(bottom=0.45, top=0.95)
 
     if nnz:
         ax.set_xlabel("num. non-zero leaves")
@@ -469,6 +469,8 @@ def plot_it_nogekeer(dname, train_results, compr_results, nnz):
             com05 = folds005[fold]
             com10 = folds010[fold]
             comlr = foldslr0[fold]
+            print(com05["verification"]["orig"]["nocs_time"],
+                  com05["verification"]["compr"]["nocs_time"])
             tr[fold, :] = [
                 trm[leafs],    # 0
                 trm["mtest"],  # 1
@@ -530,7 +532,7 @@ def plot_it_nogekeer(dname, train_results, compr_results, nnz):
 
     ve_df = pd.DataFrame(
         "-",
-        index=range(5),
+        index=range(tr_mn.shape[0]),
         columns=pd.MultiIndex.from_product(
             [["NumLeaf", "BalAccTest", "EmpRobust", "KantchelianTime", "VeritasTime"],
              ["XGB", "Compr", "LRL1"]]

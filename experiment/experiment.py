@@ -151,12 +151,18 @@ def process_train_cmd(fnames, nselected):
                 for fold in fordname[h].keys():
                     fordname[h][fold]["selected"] = True
 
-            print(dname, sum(folds[1]["on_any_pareto_front"] for folds in fordname.values()))
-            print(" " * len(dname), sum(folds[1]["on_any_chull_front"] for folds in fordname.values()))
-            print(" " * len(dname), len(hs))
-            print(np.round([np.mean([m["nleafs"] for m in fordname[h].values()]) for h in hs], 0))
-            print(np.round([np.mean([m["params"]["n_estimators"] for m in fordname[h].values()]) for h in hs], 0))
-            print(np.round([np.mean([m["params"]["max_depth"] for m in fordname[h].values()]) for h in hs], 0))
+            print(dname, "on_any_pare", sum(folds[1]["on_any_pareto_front"] for folds in fordname.values()))
+            print(" " * len(dname), "on_any_hull", sum(folds[1]["on_any_chull_front"] for folds in fordname.values()))
+            print(" " * len(dname), "   selected", len(hs))
+            print("nleafs", np.round([np.mean([m["nleafs"] for m in
+                                               fordname[h].values()]) for h in
+                                      hs], 0))
+            print("nest  ", np.round([np.mean([m["params"]["n_estimators"] for
+                                               m in fordname[h].values()]) for
+                                      h in hs], 0))
+            print("depth ", np.round([np.mean([m["params"]["max_depth"] for m
+                                               in fordname[h].values()]) for h
+                                      in hs], 0))
 
 
             #import matplotlib.pyplot as plt
@@ -203,7 +209,7 @@ def process_compress_cmd(fnames):
             forparams = util.get_or_insert(fordname, params_hash, lambda: {})
             forabserr = util.get_or_insert(forparams, name, lambda: {})
             if fold in forabserr:
-                print(f"overriding {fold} for {key} {dname} {params_hash[:6]}")
+                print(f"overriding {fold} for {key} {dname} {name} {params_hash[:6]}")
             forabserr[fold] = m
 
     #__import__('pprint').pprint(results)
@@ -247,7 +253,8 @@ def plot_compress_cmd(dname, model_type, linclf_type, seed):
 
     #        print(f"GOODNESS SCORE {dname} {goodness_score*100:.1f}%")
 
-    with PdfPages(f"/tmp/figures/{key}-nleafs.pdf") as pdf:
+    #with PdfPages(f"/tmp/figures/{key}-nleafs.pdf") as pdf:
+    if True:
         for dname in dnames:
             plt.close('all')
             train_results = all_train_results[dname]
@@ -256,8 +263,8 @@ def plot_compress_cmd(dname, model_type, linclf_type, seed):
                 dname, train_results, compr_results, nnz=False
             )
 
-            fig.savefig(f"/tmp/figures/{dname}-{key}.png")
-            pdf.savefig(fig) 
+            #fig.savefig(f"/tmp/figures/{dname}-{key}.png")
+            #pdf.savefig(fig) 
 
             print(f"GOODNESS SCORE {dname} {goodness_score*100:.1f}%")
 
@@ -539,11 +546,10 @@ def compress_cmd(dname, model_type, linclf_type, fold, abserr, seed, silent, plo
 @click.option("--fold", default=0)
 @click.option("--abserr", default=0.01)
 @click.option("--max_rounds", default=2)
-@click.option("--timeout", default=15*60)
 @click.option("--seed", default=util.SEED)
 @click.option("--silent", is_flag=True, default=False)
 def verification_cmd(
-    dname, model_type, linclf_type, fold, abserr, max_rounds, timeout, seed, silent
+    dname, model_type, linclf_type, fold, abserr, max_rounds, seed, silent
 ):
     d, dtrain, dvalid, dtest = util.get_dataset(dname, seed, linclf_type, fold, silent)
     model_class = d.get_model_class(model_type)
