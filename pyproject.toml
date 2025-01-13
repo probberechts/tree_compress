@@ -25,5 +25,5 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/laudv/tree-compress"
-Issues = "https://github.com/laudv/tree-compresss/issues"
+Homepage = "https://github.com/laudv/tree_compress"
+Issues = "https://github.com/laudv/tree_compress/issues"
