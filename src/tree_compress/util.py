@@ -1,10 +1,10 @@
+from dataclasses import dataclass
+
 import numpy as np
+from sklearn.metrics import accuracy_score, root_mean_squared_error
+from sklearn.model_selection import train_test_split
 from veritas import AddTreeType
 
-from sklearn.metrics import root_mean_squared_error
-from sklearn.metrics import accuracy_score
-
-from dataclasses import dataclass
 
 @dataclass
 class Data:
@@ -41,6 +41,65 @@ class Data:
     # the data used to train the ensemble.
     xvalid: np.ndarray
     yvalid: np.ndarray
+
+
+def split_dataset(
+    X, y, train_size=0.7, validation_size=0.15, test_size=0.15, random_state=None
+):
+    """
+    Splits a dataset into training, validation, and test sets.
+
+    Parameters
+    ----------
+    X : array-like
+        Features dataset.
+    y : array-like
+        Labels dataset.
+    train_size : float
+        Proportion of the data to be used for training.
+    validation_size : float
+        Proportion of the data to be used for validation.
+    test_size : float
+        Proportion of the data to be used for testing.
+    random_state: int, optional
+        Random seed for reproducibility.
+
+    Returns
+    -------
+        X_train: np.ndarray
+        X_val: np.ndarray
+        X_test: np.ndarray
+        y_train: np.ndarray
+        y_val: np.ndarray
+        y_test: np.ndarray
+
+    Examples
+    --------
+    >>> X = np.random.rand(100, 5)  # 100 samples, 5 features
+    >>> y = np.random.randint(0, 2, 100)  # Binary target variable
+    >>> X_train, X_val, X_test, y_train, y_val, y_test = split_dataset(
+    ....    X, y, train_size=0.7, validation_size=0.15, test_size=0.15, random_state=42)
+    """
+    # Ensure proportions sum to 1
+    total = train_size + validation_size + test_size
+    if not np.isclose(total, 1.0):
+        raise ValueError("train_size, validation_size, and test_size must sum to 1.")
+
+    # Split into train and temp (validation + test)
+    X_train, X_temp, y_train, y_temp = train_test_split(
+        X, y, test_size=(1 - train_size), random_state=random_state
+    )
+
+    # Calculate validation proportion of temp split
+    val_proportion = validation_size / (validation_size + test_size)
+
+    # Split temp into validation and test
+    X_val, X_test, y_val, y_test = train_test_split(
+        X_temp, y_temp, test_size=(1 - val_proportion), random_state=random_state
+    )
+
+    return X_train, X_val, X_test, y_train, y_val, y_test
+
 
 def neg_root_mean_squared_error(ytrue, ypred):
     return -root_mean_squared_error(ytrue, ypred)
