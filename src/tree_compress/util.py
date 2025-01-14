@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from typing import Callable, Tuple
 
 import numpy as np
 from sklearn.metrics import accuracy_score, root_mean_squared_error
 from sklearn.model_selection import train_test_split
-from veritas import AddTreeType
+from veritas import AddTree, AddTreeType
 
 
 @dataclass
@@ -100,11 +101,8 @@ def split_dataset(
     return X_train, X_val, X_test, y_train, y_val, y_test
 
 
-def neg_root_mean_squared_error(ytrue, ypred):
-    return -root_mean_squared_error(ytrue, ypred)
-
-
-def count_nnz_leafs(at):
+def count_nnz_leafs(at: AddTree) -> int:
+    """Count the number of non-zero leaf values in a veritas.AddTree."""
     nnz = 0
     for t in at:
         for lid in t.get_leaf_ids():
@@ -113,51 +111,197 @@ def count_nnz_leafs(at):
     return nnz
 
 
-def pareto_front(items, m1, m2):
-    """ metrics higher better """
+def at_isregr(at: AddTree) -> bool:
+    """Check if a given veritas.AddTree is a regressor."""
+    return at.get_type() in {
+        AddTreeType.REGR,
+        AddTreeType.REGR_MEAN,
+    }
 
 
-def metric(at, ytrue, x=None, ypred=None):
-    at_type = at.get_type()
-    nlv = at.num_leaf_values()
-
-    if at_type in {AddTreeType.REGR, AddTreeType.REGR_MEAN}:
-        score = neg_root_mean_squared_error
-        if ypred is None:
-            ypred = at.predict(x)
-    elif at_type in {AddTreeType.CLF_SOFTMAX, AddTreeType.CLF_MEAN}:
-        score = accuracy_score
-        if ypred is None and nlv == 1:
-            ypred = at.predict(x) > 0.5
-        elif ypred is None:
-            ypred = np.argmax(at.predict(x), axis=1)
-    else:
-        raise RuntimeError("cannot determine task")
-
-    return score(ytrue, ypred)
+def at_isclf(at: AddTree) -> bool:
+    """Check if a given veritas.AddTree is a classifier."""
+    return at.get_type() in {
+        AddTreeType.CLF_SOFTMAX,
+        AddTreeType.CLF_MEAN,
+    }
 
 
-def metric_name(at):
-    at_type = at.get_type()
-    if at_type in {AddTreeType.REGR, AddTreeType.REGR_MEAN}:
-        return "neg_rmse"
-    elif at_type in {AddTreeType.CLF_SOFTMAX, AddTreeType.CLF_MEAN}:
-        return "accuracy"
+def at_predlab(at: AddTree, x: np.ndarray) -> np.ndarray:
+    """Predict hard labels for veritas.AddTree"""
+    if at_isregr(at):
+        return at.predict(x)
+    elif at_isclf(at):
+        if at.num_leaf_values() == 1:
+            return (at.eval(x)[:, 0] >= 0.0).astype(int)
+        else:
+            return at.eval(x).argmax(axis=1)
     else:
         raise RuntimeError("cannot determine task")
 
 
-def isworse_relerr(metric, reference, relerr=0.0):  # higher is better
+def default_metric(
+    at: AddTree,
+) -> Tuple[str, Callable[[np.ndarray, np.ndarray], float]]:
+    """Return default metric and metric function for given AddTree."""
+    if at_isregr(at):
+        return "neg_rmse", lambda ytrue, ypred: -root_mean_squared_error(ytrue, ypred)
+    elif at_isclf(at):
+        return "accuracy", accuracy_score
+    else:
+        raise RuntimeError("cannot determine task")
+
+
+def isworse_abserr(
+    metric: float,
+    reference: float,
+    error_th: float = 0.0,
+    higher_is_better: bool = True,
+) -> bool:
+    """
+    Check if a metric is worse than a reference by an absolute error threshold.
+
+    Parameters
+    ----------
+    metric : float
+        The current metric value.
+    reference : float
+        The reference metric value to compare against.
+    error_th : float, optional
+        The absolute error threshold. Defaults to 0.0.
+    higher_is_better : bool, optional
+        If True, higher metric values are considered better.
+        If False, lower metric values are considered better. Defaults to True.
+
+    Returns
+    -------
+    bool
+        True if the metric is worse than the reference by the given absolute
+        error threshold, False otherwise.
+
+    Examples
+    --------
+    >>> isworse_abserr(90, 100, error_th=5, higher_is_better=True)
+    True
+    >>> isworse_abserr(95, 100, error_th=5, higher_is_better=True)
+    False
+    >>> isworse_abserr(105, 100, error_th=5, higher_is_better=False)
+    True
+    >>> isworse_abserr(95, 100, error_th=5, higher_is_better=False)
+    False
+    """
+    diff = metric - reference
+    if higher_is_better:
+        return diff <= -error_th
+    else:
+        return diff >= error_th
+
+
+def isworse_relerr(
+    metric: float,
+    reference: float,
+    error_th: float = 0.0,
+    higher_is_better: bool = True,
+) -> bool:
+    """
+    Check if a metric is worse than a reference by a relative error threshold.
+
+    Parameters
+    ----------
+    metric : float
+        The current metric value.
+    reference : float
+        The reference metric value to compare against.
+    error_th : float, optional
+        The relative error threshold. Defaults to 0.0.
+    higher_is_better : bool, optional
+        If True, higher metric values are considered better.
+        If False, lower metric values are considered better. Defaults to True.
+
+    Returns
+    -------
+    bool
+        True if the metric is worse than the reference by the given relative
+        error threshold, False otherwise.
+
+    Examples
+    --------
+    >>> isworse_relerr(90, 100, error_th=0.1, higher_is_better=True)
+    True
+    >>> isworse_relerr(110, 100, error_th=0.1, higher_is_better=True)
+    False
+    >>> isworse_relerr(110, 100, error_th=0.1, higher_is_better=False)
+    True
+    >>> isworse_relerr(90, 100, error_th=0.1, higher_is_better=False)
+    False
+    """
     eps = (metric - reference) / abs(reference)
-    return eps <= -relerr
+    if higher_is_better:
+        return eps <= -error_th
+    else:
+        return eps >= error_th
 
 
-def is_almost_eq(metric, reference, relerr=1e-5):
+def is_almost_eq(metric: float, reference: float, relerr: float = 1e-5) -> bool:
+    """
+    Check if two values are approximately equal within a relative error threshold.
+
+    Parameters
+    ----------
+    metric : float
+        The current metric value.
+    reference : float
+        The reference value to compare against.
+    relerr : float, optional
+        The relative error threshold for comparison. Defaults to 1e-5.
+
+    Returns
+    -------
+    bool
+        True if the relative error between `metric` and `reference` is less than
+        `relerr`, False otherwise.
+
+    Examples
+    --------
+    >>> is_almost_eq(1.00001, 1.0, relerr=1e-5)
+    True
+    >>> is_almost_eq(1.001, 1.0, relerr=1e-5)
+    False
+    >>> is_almost_eq(0.99999, 1.0, relerr=1e-5)
+    True
+    """
     eps = abs((metric - reference) / reference)
     return eps < relerr
 
 
-def is_not_almost_eq(metric, reference, relerr=1e-5):
+def is_not_almost_eq(metric: float, reference: float, relerr: float = 1e-5) -> bool:
+    """
+    Check if two values are not approximately equal within a relative error threshold.
+
+    Parameters
+    ----------
+    metric : float
+        The current metric value.
+    reference : float
+        The reference value to compare against.
+    relerr : float, optional
+        The relative error threshold for comparison. Defaults to 1e-5.
+
+    Returns
+    -------
+    bool
+        True if the relative error between `metric` and `reference` is greater
+        than or equal to `relerr`, False otherwise.
+
+    Examples
+    --------
+    >>> is_not_almost_eq(1.00001, 1.0, relerr=1e-5)
+    False
+    >>> is_not_almost_eq(1.001, 1.0, relerr=1e-5)
+    True
+    >>> is_not_almost_eq(0.99999, 1.0, relerr=1e-5)
+    False
+    """
     return not is_almost_eq(metric, reference, relerr)
 
 
