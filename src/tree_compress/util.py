@@ -184,7 +184,7 @@ def print_metrics(prefix, r, rcmp=None, cmp=isworse_relerr):
         f" ntrees {r.ntrees:3d},",
         f" nnodes {r.nnodes:5d},",
         f" nleafs {r.nleafs:5d},",
-        f" nnz {r.nnzleafs:5d}",
+        f" nnz {r.nnz_leafs:5d}",
     )
 
 
