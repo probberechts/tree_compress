@@ -1,96 +1,69 @@
+import itertools
 import time
+from dataclasses import dataclass, field
+from typing import Optional
+
 import numpy as np
 import veritas
-import itertools
-
-from dataclasses import dataclass
-
-from sklearn.linear_model import Lasso, LinearRegression, LogisticRegression, ElasticNet
+from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, LogisticRegression
 from sklearn.preprocessing import OneHotEncoder
 
-from .util import count_nnz_leafs, print_metrics, print_fit
+from .util import at_isregr, at_predlab, count_nnz_leafs, print_fit, print_metrics
 
 
-@dataclass(init=False)
+@dataclass
 class CompressRecord:
     level: int
-    tmapping: float
-    ttransform: float
-    tsearch: float
-
     at: veritas.AddTree
 
-    ntrees: int
-    nnodes: int
-    nleafs: int
-    nnzleafs: int
+    tmapping: float = 0.0
+    ttransform: float = 0.0
+    tsearch: float = 0.0
 
-    mtrain: float
-    mtest: float
-    mvalid: float
+    ntrees: int = field(init=False)
+    nnodes: int = field(init=False)
+    nleafs: int = field(init=False)
+    nnz_leafs: int = field(init=False)
 
-    alpha: float
-    clf_mtrain: float
-    clf_mvalid: float
+    mtrain: float = 0.0
+    mtest: float = 0.0
+    mvalid: float = 0.0
 
-    def __init__(self, level, at):
-        self.level = level
-        self.tmapping = 0.0
-        self.ttransform = 0.0
-        self.tsearch = 0.0
+    alphas: float = np.nan
+    clf_mtrain: float = np.nan
+    clf_mvalid: float = np.nan
 
-        self.at = at
-
-        self.ntrees = len(at)
-        self.nnodes = at.num_nodes()
-        self.nleafs = at.num_leafs()
-        self.nnzleafs = count_nnz_leafs(at)
-
-        self.mtrain = 0.0
-        self.mtest = 0.0
-        self.mvalid = 0.0
-
-        self.alphas = np.nan
-        self.clf_mtrain = np.nan
-        self.clf_mvalid = np.nan
+    def __post_init__(self):
+        """
+        Initializes derived attributes based on the provided AddTree object.
+        """
+        self.ntrees = len(self.at)
+        self.nnodes = self.at.num_nodes()
+        self.nleafs = self.at.num_leafs()
+        self.nnz_leafs = count_nnz_leafs(self.at)
 
 
-@dataclass(init=False)
+@dataclass
 class AlphaRecord:
     lo: float
     hi: float
     alpha: float
 
-    clf_mtrain: float
-    clf_mvalid: float
-    num_params: int
-    num_removed: int
-    num_kept: int
-    frac_removed: float
-    fit_time: float
+    clf_mtrain: float = 0.0
+    clf_mvalid: float = 0.0
+    num_params: int = 0
+    num_removed: int = 0
+    num_kept: int = 0
+    frac_removed: float = 0.0
+    fit_time: float = 0.0
 
-    intercept: np.ndarray
-    coefs: np.ndarray
-
-    def __init__(self, lo, hi, alpha):
-        self.lo = lo
-        self.hi = hi
-        self.alpha = alpha
-        self.clf_mtrain = 0.0
-        self.clf_mvalid = 0.0
-        self.num_params = 0
-        self.num_removed = 0
-        self.num_kept = 0
-        self.frac_removed = 0.0
-        self.fit_time = 0.0
-        self.intercept = None
-        self.coefs = None
+    intercept: Optional[np.ndarray] = None
+    coefs: Optional[np.ndarray] = None
 
 
 class AlphaSearch:
     def __init__(self, round_nsteps, mtrain_ref, mvalid_ref, isworse_fun):
-        """Search for a regularizion strength parameter.
-        """
+        """Search for a regularizion strength parameter."""
         self.round_nsteps = round_nsteps
         self.mtrain_ref = mtrain_ref
         self.mvalid_ref = mvalid_ref
@@ -174,7 +147,7 @@ class AlphaSearch:
 
         prev_round_records = self.records[-1 * nsteps :]
 
-        # Out of the records whose validation metric is good enough...
+        # Out of the records whose validation score is good enough...
         filt = self.quality_filter(prev_round_records)
         # ... pick the one with the highest alpha
         best = max(filt, default=None, key=lambda r: r.alpha)
@@ -199,31 +172,23 @@ class AlphaSearch:
             return best.lo, best.hi
 
     def get_best_record(self):
-        m = max(self.quality_filter(self.records), default=None, key=lambda r: r.frac_removed)
+        m = max(
+            self.quality_filter(self.records),
+            default=None,
+            key=lambda r: r.frac_removed,
+        )
         if m is None:
             return None
-        allm = [r for r in self.quality_filter(self.records) if r.frac_removed == m.frac_removed]
+        allm = [
+            r
+            for r in self.quality_filter(self.records)
+            if r.frac_removed == m.frac_removed
+        ]
         return allm[-1]
 
 
-def _at_isregr(at):
-    """ Check if given veritas.AddTree is regressor. """
-    return at.get_type() in {
-        veritas.AddTreeType.REGR,
-        veritas.AddTreeType.REGR_MEAN,
-    }
-
-def _at_predlab(at, x):
-    """ Predict hard labels for veritas.AddTree """
-    if _at_isregr(at):
-        return at.predict(x)
-    elif at.num_leaf_values() == 1:
-        return (at.eval(x)[:, 0] >= 0.0).astype(int)
-    else:
-        return at.eval(x).argmax(axis=1)
-
 def _lasso_predlab(isregr, nlv, clf, x):
-    """ Predict hard label for Lasso classifier """
+    """Predict hard label for Lasso classifier"""
     if isregr:
         return clf.predict(x)
     pred = clf.predict(x)
@@ -235,15 +200,14 @@ def _lasso_predlab(isregr, nlv, clf, x):
         return (pred >= 0.0).astype(int)
 
 
-
 class Compress:
     def __init__(
         self,
         data,
         at,
-        metric,  # e.g. rmse(ytrue, ypred) (for clf: labels, not weights)
+        score,  # e.g. rmse(ytrue, ypred) (for clf: labels, not weights)
         isworse,  # isworse(value, reference)
-                  # e.g. relative error is more than 0.01, abs. error >= 2%
+        # e.g. relative error is more than 0.01, abs. error >= 2%
         alpha_search_round_nsteps=[8, 4, 4],
         linclf_type="Lasso",
         seed=988569,
@@ -252,7 +216,7 @@ class Compress:
         self.d = data
         self.at = at
         self.nlv = at.num_leaf_values()
-        self.metric = metric
+        self.score = score
         self.isworse = isworse
         self.alpha_search_round_nsteps = alpha_search_round_nsteps
         self.seed = seed
@@ -262,9 +226,14 @@ class Compress:
         self.linclf_type = linclf_type
         self.warm_start = True
 
-        self.mtrain = self.metric(self.d.ytrain, _at_predlab(at, self.d.xtrain))
-        self.mtest = self.metric(self.d.ytest, _at_predlab(at, self.d.xtest))
-        self.mvalid = self.metric(self.d.yvalid, _at_predlab(at, self.d.xvalid))
+        self.mtrain = self.score(self.d.ytrain, at_predlab(at, self.d.xtrain))
+        self.mtest = self.score(self.d.ytest, at_predlab(at, self.d.xtest))
+        self.mvalid = self.score(self.d.yvalid, at_predlab(at, self.d.xvalid))
+        if not self.silent:
+            print(
+                "MODEL PERF:",
+                f"mtr {self.mtrain:.3f} mte {self.mtest:.3f} mva {self.mvalid:.3f}",
+            )
 
         if self.is_regression():
             self.ytrain = self.d.ytrain
@@ -283,20 +252,18 @@ class Compress:
             self.ytest = trsf(self.d.ytest.reshape(-1, 1))
             self.yvalid = trsf(self.d.yvalid.reshape(-1, 1))
 
-        start_record = CompressRecord(-1, at)
-        start_record.mtrain = self.mtrain
-        start_record.mtest = self.mtest
-        start_record.mvalid = self.mvalid
-        self.records = [start_record]
-
-        if not self.silent:
-            print(
-                "MODEL PERF:",
-                f"mtr {self.mtrain:.3f} mte {self.mtest:.3f} mva {self.mvalid:.3f}",
+        self.records = [
+            CompressRecord(
+                level=-1,
+                at=at,
+                mtrain=self.mtrain,
+                mtest=self.mtest,
+                mvalid=self.mvalid,
             )
+        ]
 
     def is_regression(self):
-        return _at_isregr(self.at)
+        return at_isregr(self.at)
 
     def compress(self, *, max_rounds=2):
         last_record = self.records[-1]
@@ -348,7 +315,7 @@ class Compress:
             print(
                 f"Level {level}, xxtrain.shape {xxtrain.shape},",
                 f"mapping time: {tmapping:.2f}s,",
-                f"transform time: {ttransform:.2f}s"
+                f"transform time: {ttransform:.2f}s",
             )
         alpha_search = AlphaSearch(
             self.alpha_search_round_nsteps,
@@ -363,24 +330,24 @@ class Compress:
             self._update_clf(clf, alpha_record.alpha)
             clf = self._fit_coefficients(clf, xxtrain, xxvalid, alpha_record)
 
-            #at = self._prune_trees(self.at, clf.intercept_, clf.coef_, mapping)
-            #mtr = self.metric(self.d.ytrain, _at_predlab(at, self.d.xtrain))
-            #mva = self.metric(self.d.yvalid, _at_predlab(at, self.d.xvalid))
-            #print("check mtrain", mtr, np.round(mtr - alpha_record.clf_mtrain, 3))
-            #eval_at = at.eval(self.d.xtrain)[:,0]
-            #eval_clf = clf.predict(xxtrain)
-            #diff = eval_at - eval_clf
-            #print(eval_at.round(5))
-            #print(eval_clf.round(5))
-            #print(diff.round(5), diff[0], np.std(diff))
-            #print("check mvalid", mva, np.round(mva - alpha_record.clf_mvalid, 3))
-            #eval_at = at.eval(self.d.xvalid)[:,0]
-            #eval_clf = clf.predict(xxvalid)
-            #diff = eval_at - eval_clf
-            #print(eval_at.round(5))
-            #print(eval_clf.round(5))
-            #print(diff.round(5), diff[0], np.std(diff))
-            #print()
+            # at = self._prune_trees(self.at, clf.intercept_, clf.coef_, mapping)
+            # mtr = self.score(self.d.ytrain, at_predlab(at, self.d.xtrain))
+            # mva = self.score(self.d.yvalid, at_predlab(at, self.d.xvalid))
+            # print("check mtrain", mtr, np.round(mtr - alpha_record.clf_mtrain, 3))
+            # eval_at = at.eval(self.d.xtrain)[:,0]
+            # eval_clf = clf.predict(xxtrain)
+            # diff = eval_at - eval_clf
+            # print(eval_at.round(5))
+            # print(eval_clf.round(5))
+            # print(diff.round(5), diff[0], np.std(diff))
+            # print("check mvalid", mva, np.round(mva - alpha_record.clf_mvalid, 3))
+            # eval_at = at.eval(self.d.xvalid)[:,0]
+            # eval_clf = clf.predict(xxvalid)
+            # diff = eval_at - eval_clf
+            # print(eval_at.round(5))
+            # print(eval_clf.round(5))
+            # print(diff.round(5), diff[0], np.std(diff))
+            # print()
 
             if not self.silent:
                 print_fit(alpha_record, alpha_search)
@@ -401,26 +368,35 @@ class Compress:
             clf_mvalid = best.clf_mvalid
 
         # record
-        mtrain_compr = self.metric(self.d.ytrain, _at_predlab(self.at, self.d.xtrain))
-        mtest_compr = self.metric(self.d.ytest, _at_predlab(self.at, self.d.xtest))
-        mvalid_compr = self.metric(self.d.yvalid, _at_predlab(self.at, self.d.xvalid))
+        mtrain_compr = self.score(self.d.ytrain, at_predlab(self.at, self.d.xtrain))
+        mtest_compr = self.score(self.d.ytest, at_predlab(self.at, self.d.xtest))
+        mvalid_compr = self.score(self.d.yvalid, at_predlab(self.at, self.d.xvalid))
         if not self.silent:
-            print("best check mtrain", mtrain_compr, clf_mtrain, mtrain_compr-clf_mtrain,
-                  f"(alpha={best_alpha:.4f})")
-            print("best check mvalid", mvalid_compr, clf_mvalid, mvalid_compr-clf_mvalid)
-        record = CompressRecord(level, self.at)
-        record.mtrain = mtrain_compr
-        record.mtest = mtest_compr
-        record.mvalid = mvalid_compr
-        record.alpha = best_alpha
-        record.clf_mtrain = clf_mtrain
-        record.clf_mvalid = clf_mvalid
-        record.tmapping = tmapping
-        record.ttransform = ttransform
-        record.tsearch = tsearch
+            print(
+                "best check mtrain",
+                mtrain_compr,
+                clf_mtrain,
+                mtrain_compr - clf_mtrain,
+                f"(alpha={best_alpha:.4f})",
+            )
+            print(
+                "best check mvalid", mvalid_compr, clf_mvalid, mvalid_compr - clf_mvalid
+            )
+        record = CompressRecord(
+            level=level,
+            at=self.at,
+            mtrain=mtrain_compr,
+            mtest=mtest_compr,
+            mvalid=mvalid_compr,
+            alphas=best_alpha,
+            clf_mtrain=clf_mtrain,
+            clf_mvalid=clf_mvalid,
+            tmapping=tmapping,
+            ttransform=ttransform,
+            tsearch=tsearch,
+        )
 
         return record
-
 
     def is_single_target(self):
         return self.nlv == 1
@@ -454,7 +430,7 @@ class Compress:
 
                 if n_at_level not in mapping1:
                     mapping1[n_at_level] = num_cols
-                    if t.is_root(n_at_level):    # only multiplicative coefficients
+                    if t.is_root(n_at_level):  # only multiplicative coefficients
                         num_cols += 1
                     elif t.is_leaf(n_at_level):  # only biases
                         num_cols += self.nlv
@@ -482,7 +458,7 @@ class Compress:
                 if t.is_root(n_at_level) or not t.is_leaf(n_at_level):
                     for target in range(self.nlv):
                         leaf_value = t.get_leaf_value(leaf_id, target)
-                        xx[i, col_idx+target] = leaf_value
+                        xx[i, col_idx + target] = leaf_value
                     col_idx += self.nlv
                 if t.is_leaf(n_at_level) or not t.is_root(n_at_level):
                     xx[i, col_idx] = 1.0
@@ -495,11 +471,11 @@ class Compress:
         except ModuleNotFoundError:
             return False
 
-        #t = time.time()
+        # t = time.time()
         xnode = np.array([t.eval_node(x) for t in at], dtype=np.int32)
-        #txnode = time.time() - t
+        # txnode = time.time() - t
 
-        #t = time.time()
+        # t = time.time()
         M = len(at)
         max_leaf_id = max(max(m[0].keys(), default=0) for m in mapping)
         n_at_levels = np.full((M, max_leaf_id + 1), -1, dtype=np.int32)
@@ -511,9 +487,9 @@ class Compress:
                 for target in range(self.nlv):
                     leafvals[m, leaf_id, target] = tree.get_leaf_value(leaf_id, target)
 
-        #tn_at_levels = time.time() - t
+        # tn_at_levels = time.time() - t
 
-        #t = time.time()
+        # t = time.time()
         max_n_at_level = max(max(m[1].keys(), default=0) for m in mapping)
         col_idxs = np.full((M, max_n_at_level + 1), -1, dtype=np.int32)
         node_types = np.zeros((M, max_n_at_level + 1), dtype=np.uint8)
@@ -522,9 +498,9 @@ class Compress:
                 col_idxs[m, n_at_level] = col_idx
                 is_root = np.uint8(tree.is_root(n_at_level) * 0b01)
                 is_leaf = np.uint8(tree.is_leaf(n_at_level) * 0b10)
-                node_types[m, n_at_level] = is_root | is_leaf 
+                node_types[m, n_at_level] = is_root | is_leaf
 
-        #tcol_idxs = time.time() - t
+        # tcol_idxs = time.time() - t
 
         @numba.jit(
             "(int32, float32[:,:], int32[:,:], float32[:,:,:], int32[:,:], int32[:,:], uint8[:,:])",
@@ -537,7 +513,7 @@ class Compress:
             if nlv > 1:  # if not self.is_single_target():
                 for i in range(xnode.shape[1]):  # iterate over examples
                     for target in range(nlv):
-                        ii = i*nlv + target
+                        ii = i * nlv + target
                         xx[ii, target] = 1.0  # intercept for target
 
             for m in range(xnode.shape[0]):  # iterate over trees (could use prange)
@@ -551,7 +527,7 @@ class Compress:
                     is_leaf = (node_type & 0b10) == 0b10
 
                     for target in range(nlv):
-                        ii = i*nlv + target
+                        ii = i * nlv + target
                         leaf_value = leafvals[m, leaf_id, target]
                         if is_root and is_leaf:
                             continue
@@ -559,13 +535,13 @@ class Compress:
                             xx[ii, col_idx] = leaf_value
                         if is_leaf or not is_root:
                             offset = int(is_root or not is_leaf)
-                            xx[ii, col_idx+offset+target] = 1.0
+                            xx[ii, col_idx + offset + target] = 1.0
 
-        #t = time.time()
+        # t = time.time()
         __transformx(self.nlv, xx, xnode, leafvals, n_at_levels, col_idxs, node_types)
-        #tnumba = time.time() - t
+        # tnumba = time.time() - t
 
-        #print("numba DEBUG", f"in {txnode:.2f}s {tn_at_levels:.2f}s {tcol_idxs:.2f}s {tnumba:.2f}s")
+        # print("numba DEBUG", f"in {txnode:.2f}s {tn_at_levels:.2f}s {tcol_idxs:.2f}s {tnumba:.2f}s")
 
         return True
 
@@ -584,7 +560,7 @@ class Compress:
                 copy_X=False,
                 warm_start=self.warm_start,
             )
-        #elif self.linclf_type == "ElasticNet":
+        # elif self.linclf_type == "ElasticNet":
         #    return ElasticNet(
         #        fit_intercept=False,
         #        l1_ratio=0.9,
@@ -623,6 +599,7 @@ class Compress:
 
     def _fit_coefficients(self, clf, xxtrain, xxvalid, alpha_record):
         import warnings
+
         from sklearn.exceptions import ConvergenceWarning
 
         fit_time = time.time()
@@ -642,19 +619,19 @@ class Compress:
         yhat_train = _lasso_predlab(isregr, self.nlv, clf, xxtrain)
         yhat_valid = _lasso_predlab(isregr, self.nlv, clf, xxvalid)
 
-        #wrongs = np.nonzero((yhat_valid != self.d.yvalid))[0]
-        #print(wrongs)
-        #print("AT")
-        #print(self.at.eval(self.d.xvalid[wrongs[0:4], :]).round(2))
-        #print("PRED")
-        #print(clf.predict(xxvalid[wrongs[0:4], :]).round(2))
-        #print("LABELS")
-        #print("  at", self.at.eval(self.d.xvalid[wrongs[0:4], :]).argmax(axis=1))
-        #print(" clf", clf.predict(xxvalid[wrongs[0:4], :]).argmax(axis=1))
-        #print("true", self.d.yvalid[wrongs[0:4]])
+        # wrongs = np.nonzero((yhat_valid != self.d.yvalid))[0]
+        # print(wrongs)
+        # print("AT")
+        # print(self.at.eval(self.d.xvalid[wrongs[0:4], :]).round(2))
+        # print("PRED")
+        # print(clf.predict(xxvalid[wrongs[0:4], :]).round(2))
+        # print("LABELS")
+        # print("  at", self.at.eval(self.d.xvalid[wrongs[0:4], :]).argmax(axis=1))
+        # print(" clf", clf.predict(xxvalid[wrongs[0:4], :]).argmax(axis=1))
+        # print("true", self.d.yvalid[wrongs[0:4]])
 
-        alpha_record.clf_mtrain = self.metric(self.d.ytrain, yhat_train)
-        alpha_record.clf_mvalid = self.metric(self.d.yvalid, yhat_valid)
+        alpha_record.clf_mtrain = self.score(self.d.ytrain, yhat_train)
+        alpha_record.clf_mvalid = self.score(self.d.yvalid, yhat_valid)
         alpha_record.num_params = num_params
         alpha_record.num_removed = num_removed
         alpha_record.num_kept = num_params - num_removed
@@ -673,7 +650,7 @@ class Compress:
 
         for m in range(0, len(self.at), num_trees):
             sub_at = veritas.AddTree(self.nlv, veritas.AddTreeType.REGR)
-            mend = min(m+num_trees, len(self.at))
+            mend = min(m + num_trees, len(self.at))
             for mm in range(m, mend):
                 sub_at.add_tree(self.at[mm])
             mapping, num_cols = self._get_matrix_mapping(sub_at, level)
@@ -681,23 +658,39 @@ class Compress:
             xxvalid = self._transformx(sub_at, self.d.xvalid, mapping, num_cols)
 
             clf = LinearRegression().fit(xxtrain, self.ytrain)
-            print(f"ACC {m}:{mend}",
-                  np.mean(clf.predict(xxtrain).argmax(axis=1) == self.d.ytrain),
-                  np.mean(clf.predict(xxvalid).argmax(axis=1) == self.d.yvalid))
+            print(
+                f"ACC {m}:{mend}",
+                np.mean(clf.predict(xxtrain).argmax(axis=1) == self.d.ytrain),
+                np.mean(clf.predict(xxvalid).argmax(axis=1) == self.d.yvalid),
+            )
 
-            sub_at_pruned = self._prune_trees(sub_at, clf.intercept_, clf.coef_, mapping)
-            print(f"ACC {m}:{mend}",
-                  np.mean(sub_at_pruned.predict(self.d.xtrain).argmax(axis=1) == self.d.ytrain),
-                  np.mean(sub_at_pruned.predict(self.d.xvalid).argmax(axis=1) == self.d.yvalid))
+            sub_at_pruned = self._prune_trees(
+                sub_at, clf.intercept_, clf.coef_, mapping
+            )
+            print(
+                f"ACC {m}:{mend}",
+                np.mean(
+                    sub_at_pruned.predict(self.d.xtrain).argmax(axis=1) == self.d.ytrain
+                ),
+                np.mean(
+                    sub_at_pruned.predict(self.d.xvalid).argmax(axis=1) == self.d.yvalid
+                ),
+            )
 
             pre_tuned_at.add_trees(sub_at_pruned)
 
         print("END PRE FIT")
 
         self.at = pre_tuned_at
-        print("ACC",
-              np.mean(pre_tuned_at.predict(self.d.xtrain).argmax(axis=1) == self.d.ytrain),
-              np.mean(pre_tuned_at.predict(self.d.xvalid).argmax(axis=1) == self.d.yvalid))
+        print(
+            "ACC",
+            np.mean(
+                pre_tuned_at.predict(self.d.xtrain).argmax(axis=1) == self.d.ytrain
+            ),
+            np.mean(
+                pre_tuned_at.predict(self.d.xvalid).argmax(axis=1) == self.d.yvalid
+            ),
+        )
 
     def _prune_trees(self, at, intercept, coefs, mapping):
         addtree_type = veritas.AddTreeType.CLF_MEAN
@@ -740,7 +733,7 @@ class Compress:
         self._copy_subtree(t, t.root(), tc, tc.root(), coefs, mapping1)
 
     def _copy_subtree(self, t, n, tc, nc, coefs, mapping1):
-        #coefs[abs(coefs) < self.tol] = 0.0
+        # coefs[abs(coefs) < self.tol] = 0.0
 
         zero_bias = np.zeros(self.nlv)
         stack = [(n, nc, 1.0, zero_bias)]
@@ -754,20 +747,20 @@ class Compress:
                     bias = zero_bias
                 elif t.is_leaf(n):
                     coef = 0.0
-                    bias = coefs[col_idx:col_idx+self.nlv]
+                    bias = coefs[col_idx : col_idx + self.nlv]
                 else:
                     coef = coefs[col_idx]
-                    bias = coefs[col_idx+1:col_idx+self.nlv+1]
+                    bias = coefs[col_idx + 1 : col_idx + self.nlv + 1]
 
                 if abs(coef) <= self.tol:  # skip the branch, just predict bias
-                    #if not t.is_leaf(n) and np.all(abs(bias)) > self.tol:
+                    # if not t.is_leaf(n) and np.all(abs(bias)) > self.tol:
                     #    print(f"cutting off branch {n} of size {t.tree_size(n)}, leaf value {bias.round(3)}")
                     for k in range(self.nlv):
                         tc.set_leaf_value(nc, k, bias[k])
                     continue
 
-                #print(coef, "coef", nc)
-                #print(bias, "bias", nc)
+                # print(coef, "coef", nc)
+                # print(bias, "bias", nc)
 
             if t.is_internal(n):
                 s = t.get_split(n)
@@ -776,9 +769,9 @@ class Compress:
                 stack.append((t.left(n), tc.left(nc), coef, bias))
             else:
                 for target in range(self.nlv):
-                    #leaf_value = bias[k] + np.dot(coef[k, :], leaf_values)
+                    # leaf_value = bias[k] + np.dot(coef[k, :], leaf_values)
                     leaf_value = bias[target] + coef * t.get_leaf_value(n, target)
-                    #print(f"new leaf value node {nc} target {target} {leaf_value}")
+                    # print(f"new leaf value node {nc} target {target} {leaf_value}")
                     tc.set_leaf_value(nc, target, leaf_value)
 
 

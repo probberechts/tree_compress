@@ -155,7 +155,7 @@ def default_metric(
 def isworse_abserr(
     metric: float,
     reference: float,
-    error_th: float = 0.0,
+    abserr: float = 0.0,
     higher_is_better: bool = True,
 ) -> bool:
     """
@@ -167,7 +167,7 @@ def isworse_abserr(
         The current metric value.
     reference : float
         The reference metric value to compare against.
-    error_th : float, optional
+    abserr : float, optional
         The absolute error threshold. Defaults to 0.0.
     higher_is_better : bool, optional
         If True, higher metric values are considered better.
@@ -181,26 +181,26 @@ def isworse_abserr(
 
     Examples
     --------
-    >>> isworse_abserr(90, 100, error_th=5, higher_is_better=True)
+    >>> isworse_abserr(90, 100, abserr=5, higher_is_better=True)
     True
-    >>> isworse_abserr(95, 100, error_th=5, higher_is_better=True)
+    >>> isworse_abserr(95, 100, abserr=5, higher_is_better=True)
     False
-    >>> isworse_abserr(105, 100, error_th=5, higher_is_better=False)
+    >>> isworse_abserr(105, 100, abserr=5, higher_is_better=False)
     True
-    >>> isworse_abserr(95, 100, error_th=5, higher_is_better=False)
+    >>> isworse_abserr(95, 100, abserr=5, higher_is_better=False)
     False
     """
     diff = metric - reference
     if higher_is_better:
-        return diff <= -error_th
+        return diff <= -abserr
     else:
-        return diff >= error_th
+        return diff >= abserr
 
 
 def isworse_relerr(
     metric: float,
     reference: float,
-    error_th: float = 0.0,
+    relerr: float = 0.0,
     higher_is_better: bool = True,
 ) -> bool:
     """
@@ -212,7 +212,7 @@ def isworse_relerr(
         The current metric value.
     reference : float
         The reference metric value to compare against.
-    error_th : float, optional
+    relerr : float, optional
         The relative error threshold. Defaults to 0.0.
     higher_is_better : bool, optional
         If True, higher metric values are considered better.
@@ -226,20 +226,20 @@ def isworse_relerr(
 
     Examples
     --------
-    >>> isworse_relerr(90, 100, error_th=0.1, higher_is_better=True)
+    >>> isworse_relerr(90, 100, relerr=0.1, higher_is_better=True)
     True
-    >>> isworse_relerr(110, 100, error_th=0.1, higher_is_better=True)
+    >>> isworse_relerr(110, 100, relerr=0.1, higher_is_better=True)
     False
-    >>> isworse_relerr(110, 100, error_th=0.1, higher_is_better=False)
+    >>> isworse_relerr(110, 100, relerr=0.1, higher_is_better=False)
     True
-    >>> isworse_relerr(90, 100, error_th=0.1, higher_is_better=False)
+    >>> isworse_relerr(90, 100, relerr=0.1, higher_is_better=False)
     False
     """
     eps = (metric - reference) / abs(reference)
     if higher_is_better:
-        return eps <= -error_th
+        return eps <= -relerr
     else:
-        return eps >= error_th
+        return eps >= relerr
 
 
 def is_almost_eq(metric: float, reference: float, relerr: float = 1e-5) -> bool:
