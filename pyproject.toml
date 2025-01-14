@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "dtai_tree_compress"
 version = "0.1"
 authors = [
-  { name="Laurens Devos" },
+    { name = "Laurens Devos", email = "laurens.devos@kuleuven.be" },
 ]
 description = "TreeCompress: top-down compression of decision tree ensembles using L1 regularization"
 readme = "README.md"
@@ -22,6 +22,13 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.391",
+    "pytest>=8.3.4",
+    "ruff>=0.8.5"
 ]
 
 [project.urls]
@@ -52,3 +59,12 @@ select = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["tree_compress"]
+
+[tool.pyright]
+venvPath = "."          # the venv is in the current dir
+venv = ".venv"          #       in a folder called `.venv`
+strict = ["**/*.py"]    # use 'strict' checking on all files
+pythonVersion = "3.8"   # specify the _lowest_ you support
+
+[tool.pytest.ini_options]
+addopts = "--doctest-modules"
