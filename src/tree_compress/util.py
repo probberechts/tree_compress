@@ -8,37 +8,36 @@ from veritas import AddTreeType
 
 @dataclass
 class Data:
-    """The train, test, and validation data and labels.
+    """
+    Container for training, testing, and validation data and their respective labels.
 
-    Attributes:
-        xtrain (np.ndarray): The data that was used to train the tree ensemble.
-        ytrain (np.ndarray): Train labels.
+    Attributes
+    ----------
+    xtrain : np.ndarray
+        The data used to train the tree ensemble.
+    ytrain : np.ndarray
+        Labels corresponding to `xtrain`.
 
-        xtest  (np.ndarray): The data that is used to evaluate the tree ensemble and the
-            pruned tree ensemble. This data is **not** used in the learning or the
-            compression process.
-        ytest  (np.ndarray): Test labels.
+    xtest : np.ndarray
+        The data used to evaluate the tree ensemble and the pruned tree ensemble.
+        This data is **not** used during the learning or compression process.
+    ytest : np.ndarray
+        Labels corresponding to `xtest`.
 
-        xvalid (np.ndarray): This data is used to tune the strenght of the
-            regularization coefficient alpha. This data should not have been used to
-            train the ensemble to avoid overfitting on the data used to train the
-            ensemble.
-        yvalid (np.ndarray): Validation labels.
-
+    xvalid : np.ndarray
+        The data used to tune the strength of the regularization coefficient, alpha.
+        This data should not have been used to train the ensemble, to avoid
+        overfitting on the training data.
+    yvalid : np.ndarray
+        Labels corresponding to `xvalid`.
     """
 
-    # The data that was used to train the tree ensemble
     xtrain: np.ndarray
     ytrain: np.ndarray
 
-    # The data that is used to evaluate the tree ensemble and the pruned tree ensemble.
-    # This data is **not** used in the learning or the compression process.
     xtest: np.ndarray
     ytest: np.ndarray
 
-    # This data is used to tune the strenght of the regularization coefficient alpha.
-    # This data should not have been used to train the ensemble to avoid overfitting on
-    # the data used to train the ensemble.
     xvalid: np.ndarray
     yvalid: np.ndarray
 
