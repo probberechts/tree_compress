@@ -27,3 +27,28 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/laudv/tree_compress"
 Issues = "https://github.com/laudv/tree_compress/issues"
+
+[tool.ruff]
+target-version = "py38"
+line-length = 88
+indent-width = 4
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.ruff.lint]
+# you can see the looong list of rules here:
+# https://docs.astral.sh/ruff/rules/
+select = [
+  "A",    # warn about shadowing built-ins
+  "E",    # style stuff, whitespaces
+  "F",    # important pyflakes lints
+  "I",    # import sorting
+  "N",    # naming
+  "T100", # breakpoints (probably don't want these in prod!)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tree_compress"]
